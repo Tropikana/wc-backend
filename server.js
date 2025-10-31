@@ -1,19 +1,16 @@
 import express from "express";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
-import SignClient from "@walletconnect/sign-client"; // ✅ статичен ESM импорт
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
 
 // ── конфигурация ───────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-const WC_PROJECT_ID = (process.env.WC_PROJECT_ID || "").trim(); // 32 символа
+const WC_PROJECT_ID = (process.env.WC_PROJECT_ID || "").trim();
 const RELAY_URL = process.env.RELAY_URL || "wss://relay.walletconnect.com";
-// домейнът, от който реално отваряш страницата (трябва да е в Allowlist)
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://wc-backend-tpug.onrender.com";
-
-if (!WC_PROJECT_ID) {
-  console.error("[FATAL] Missing WC_PROJECT_ID env var");
-  process.exit(1);
-}
+if (!WC_PROJECT_ID) { console.error("[FATAL] Missing WC_PROJECT_ID"); process.exit(1); }
 
 // ── app ────────────────────────────────────────────────────────────────────────
 const app = express();
@@ -28,15 +25,41 @@ app.get("/env", (_req, res) => {
   res.json({
     frontendUrl: FRONTEND_URL,
     relayUrl: RELAY_URL,
-    wcProjectId_len: WC_PROJECT_ID.length, // трябва да е 32
-    wcProjectId_preview: WC_PROJECT_ID ? (WC_PROJECT_ID.slice(0,3) + "..." + WC_PROJECT_ID.slice(-3)) : ""
+    wcProjectId_len: WC_PROJECT_ID.length,
+    wcProjectId_preview: WC_PROJECT_ID ? (WC_PROJECT_ID.slice(0,3)+"..."+WC_PROJECT_ID.slice(-3)) : ""
   });
 });
 
-// ── WalletConnect SignClient (lazy init) ───────────────────────────────────────
+// ── robust импорт на @walletconnect/sign-client ────────────────────────────────
+let SignClientCtor = null;
+async function loadSignClient() {
+  if (SignClientCtor) return SignClientCtor;
+
+  let mod = null, loaded = "esm";
+  try {
+    mod = await import("@walletconnect/sign-client");
+  } catch {
+    loaded = "cjs";
+    mod = require("@walletconnect/sign-client");
+  }
+
+  const candidate = mod?.default ?? mod?.SignClient ?? mod;
+  const keys = Object.keys(mod || {});
+  console.log(`[WC IMPORT] mode=${loaded}, keys=${JSON.stringify(keys)}`);
+
+  if (!candidate || typeof candidate.init !== "function") {
+    throw new Error(`WalletConnect SignClient 'init' not found. mode=${loaded}, keys=${JSON.stringify(keys)}`);
+  }
+  SignClientCtor = candidate;
+  return SignClientCtor;
+}
+
+// ── WalletConnect клиент (lazy init) ───────────────────────────────────────────
 let signClient = null;
 async function getSignClient() {
   if (signClient) return signClient;
+
+  const SignClient = await loadSignClient();
   try {
     signClient = await SignClient.init({
       projectId: WC_PROJECT_ID,
@@ -44,7 +67,7 @@ async function getSignClient() {
       metadata: {
         name: "3DHome4U Login",
         description: "Login via WalletConnect / MetaMask",
-        // ТРЯБВА да е домейн от Allowlist в Reown/WalletConnect Cloud
+        // домейнът трябва да е в Allowlist на Reown/WalletConnect Cloud
         url: "https://wc-backend-tpug.onrender.com",
         icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
       }
@@ -57,31 +80,20 @@ async function getSignClient() {
 }
 
 // ── pending store с TTL ────────────────────────────────────────────────────────
-const PENDING_TTL_MS = 2 * 60 * 1000; // 2 минути
-/** @type {Map<string, {createdAt:number, approval:Promise<any>, session:any|null}>} */
+const PENDING_TTL_MS = 2 * 60 * 1000;
 const pendings = new Map();
-
 setInterval(() => {
   const now = Date.now();
-  for (const [id, row] of pendings) {
-    if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
-  }
+  for (const [id, row] of pendings) if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
 }, 30_000);
 
 // ── API: създай WalletConnect pairing ─────────────────────────────────────────
 app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
-
     const requiredNamespaces = {
       eip155: {
-        methods: [
-          "personal_sign",
-          "eth_sign",
-          "eth_signTypedData",
-          "eth_signTypedData_v4",
-          "eth_sendTransaction"
-        ],
+        methods: ["personal_sign", "eth_sign", "eth_signTypedData", "eth_signTypedData_v4", "eth_sendTransaction"],
         chains: ["eip155:1", "eip155:137", "eip155:25", "eip155:338"],
         events: ["chainChanged", "accountsChanged"]
       }
@@ -94,20 +106,18 @@ app.get("/wc-uri", async (_req, res) => {
     const row = { createdAt, approval, session: null };
     pendings.set(id, row);
 
-    approval
-      .then((session) => {
-        const ns = session.namespaces?.eip155;
-        const first = ns?.accounts?.[0] || "";
-        const [_, chainIdStr, address] = first.split(":");
-        row.session = {
-          topic: session.topic,
-          addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
-          chains: ns?.chains || [],
-          address: address || null,
-          chainId: Number(chainIdStr || 0)
-        };
-      })
-      .catch(() => { /* отказ в уолета — оставяме да изтече по TTL */ });
+    approval.then((session) => {
+      const ns = session.namespaces?.eip155;
+      const first = ns?.accounts?.[0] || "";
+      const [_, chainIdStr, address] = first.split(":");
+      row.session = {
+        topic: session.topic,
+        addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
+        chains: ns?.chains || [],
+        address: address || null,
+        chainId: Number(chainIdStr || 0)
+      };
+    }).catch(() => { /* отказ в уолета */ });
 
     const expiresAt = new Date(createdAt + PENDING_TTL_MS).toISOString();
     res.json({ id, uri, expiresAt });
@@ -130,7 +140,7 @@ app.get("/wc-status", (req, res) => {
   return res.json({ status: "pending" });
 });
 
-// ── статични файлове (папка public/) ──────────────────────────────────────────
+// ── статични файлове ───────────────────────────────────────────────────────────
 app.use(express.static("public"));
 
 // ── старт ─────────────────────────────────────────────────────────────────────
