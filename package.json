@@ -1,16 +1,16 @@
 {
-  "name": "wc-backend",
+  "name": "wc-login-demo",
+  "version": "1.0.0",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js"
   },
   "dependencies": {
     "@walletconnect/sign-client": "2.11.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
-  },
-  "engines": {
-    "node": "18.x"
+    "express": "^4.19.2",
+    "uuid": "^9.0.1"
   }
 }
