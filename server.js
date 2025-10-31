@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 3000;
 const WC_PROJECT_ID = (process.env.WC_PROJECT_ID || "").trim();
 const RELAY_URL = process.env.RELAY_URL || "wss://relay.walletconnect.com";
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://wc-backend-tpug.onrender.com";
+
 if (!WC_PROJECT_ID) { console.error("[FATAL] Missing WC_PROJECT_ID"); process.exit(1); }
 
 // ── app ────────────────────────────────────────────────────────────────────────
@@ -31,43 +32,59 @@ app.get("/env", (_req, res) => {
 });
 
 // ── robust импорт на @walletconnect/sign-client ────────────────────────────────
-let SignClientCtor = null;
+let SignClientFactory = null;
 async function loadSignClient() {
-  if (SignClientCtor) return SignClientCtor;
+  if (SignClientFactory) return SignClientFactory;
 
-  let mod = null, loaded = "esm";
+  let mod = null, mode = "esm";
   try {
     mod = await import("@walletconnect/sign-client");
   } catch {
-    loaded = "cjs";
+    mode = "cjs";
     mod = require("@walletconnect/sign-client");
   }
-
-  const candidate = mod?.default ?? mod?.SignClient ?? mod;
   const keys = Object.keys(mod || {});
-  console.log(`[WC IMPORT] mode=${loaded}, keys=${JSON.stringify(keys)}`);
+  console.log(`[WC IMPORT] mode=${mode}, keys=${JSON.stringify(keys)}`);
 
-  if (!candidate || typeof candidate.init !== "function") {
-    throw new Error(`WalletConnect SignClient 'init' not found. mode=${loaded}, keys=${JSON.stringify(keys)}`);
+  // кандидати от различните билдове
+  const Candidate =
+    mod?.default?.init ? mod.default :
+    mod?.SignClient?.init ? mod.SignClient :
+    (typeof mod?.default === "function" ? mod.default :
+     typeof mod?.SignClient === "function" ? mod.SignClient : null);
+
+  if (!Candidate) {
+    throw new Error(`WalletConnect SignClient export not recognized. mode=${mode}, keys=${JSON.stringify(keys)}`);
   }
-  SignClientCtor = candidate;
-  return SignClientCtor;
+
+  // нормализираме до "factory" функция, която връща инстанция
+  SignClientFactory = async (opts) => {
+    if (typeof Candidate.init === "function") {
+      return Candidate.init(opts);                    // вариант с static init(...)
+    }
+    // вариант конструктор new SignClient(...)
+    const instance = new Candidate(opts);
+    if (!instance || typeof instance.connect !== "function") {
+      throw new Error("Constructed SignClient has no .connect()");
+    }
+    return instance;
+  };
+  return SignClientFactory;
 }
 
 // ── WalletConnect клиент (lazy init) ───────────────────────────────────────────
 let signClient = null;
 async function getSignClient() {
   if (signClient) return signClient;
-
-  const SignClient = await loadSignClient();
+  const create = await loadSignClient();
   try {
-    signClient = await SignClient.init({
+    signClient = await create({
       projectId: WC_PROJECT_ID,
       relayUrl: RELAY_URL,
       metadata: {
         name: "3DHome4U Login",
         description: "Login via WalletConnect / MetaMask",
-        // домейнът трябва да е в Allowlist на Reown/WalletConnect Cloud
+        // домейнът трябва да е в Allowlist (Reown/WalletConnect Cloud)
         url: "https://wc-backend-tpug.onrender.com",
         icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
       }
@@ -82,6 +99,7 @@ async function getSignClient() {
 // ── pending store с TTL ────────────────────────────────────────────────────────
 const PENDING_TTL_MS = 2 * 60 * 1000;
 const pendings = new Map();
+
 setInterval(() => {
   const now = Date.now();
   for (const [id, row] of pendings) if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
@@ -93,9 +111,9 @@ app.get("/wc-uri", async (_req, res) => {
     const client = await getSignClient();
     const requiredNamespaces = {
       eip155: {
-        methods: ["personal_sign", "eth_sign", "eth_signTypedData", "eth_signTypedData_v4", "eth_sendTransaction"],
-        chains: ["eip155:1", "eip155:137", "eip155:25", "eip155:338"],
-        events: ["chainChanged", "accountsChanged"]
+        methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
+        chains: ["eip155:1","eip155:137","eip155:25","eip155:338"],
+        events: ["chainChanged","accountsChanged"]
       }
     };
 
