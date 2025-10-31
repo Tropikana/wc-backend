@@ -1,23 +1,31 @@
 import express from "express";
 import cors from "cors";
-import SignClientModule from "@walletconnect/sign-client"; // може да е factory или обект с .init
+import * as SignClientPkg from "@walletconnect/sign-client"; // хващаме namespace импорта
 import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Унифицирана функция за създаване на клиента
+// Унифицирана фабрика за създаване на клиента – покрива всички варианти:
 const makeSignClient = async (opts) => {
-  // новите версии експортират ФУНКЦИЯ (factory)
-  if (typeof SignClientModule === "function") {
-    return await SignClientModule(opts);
+  // 1) ESM default експортира ФУНКЦИЯ (новите версии)
+  if (typeof SignClientPkg?.default === "function") {
+    return await SignClientPkg.default(opts);
   }
-  // старите версии имат .init()
-  if (SignClientModule?.init) {
-    return await SignClientModule.init(opts);
+  // 2) ESM default експортира ОБЕКТ с .init (класическо 2.11.0 API)
+  if (SignClientPkg?.default?.init) {
+    return await SignClientPkg.default.init(opts);
   }
-  throw new Error("Unsupported @walletconnect/sign-client export");
+  // 3) Стар namespace с .init директно
+  if (typeof SignClientPkg?.init === "function") {
+    return await SignClientPkg.init(opts);
+  }
+  // 4) Някои сборки имат вътре ключ SignClient
+  if (SignClientPkg?.SignClient?.init) {
+    return await SignClientPkg.SignClient.init(opts);
+  }
+  throw new Error("WalletConnect sign-client: unknown export shape");
 };
 
 const signClient = await makeSignClient({
