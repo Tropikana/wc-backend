@@ -279,4 +279,8 @@ app.post("/wc-login", async (req, res) => {
     res.status(500).json({ error: e?.message || "sign failed" });
   }
 });
-
+/* ------------------------------------------------------------------
+   Start
+------------------------------------------------------------------- */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`WalletConnect backend listening on :${PORT}`));
