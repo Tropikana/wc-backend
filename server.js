@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ---------- устойчиво създаване на клиента ----------
+// ---------- УСТОЙЧИВО СЪЗДАВАНЕ НА КЛИЕНТА ----------
 const opts = {
   projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
@@ -20,62 +20,70 @@ const opts = {
   }
 };
 
-// ще опитаме няколко възможни експорта
 async function makeSignClient() {
-  const tried = [];
-
-  // помощник: опитай да инициализираш по два начина
-  const tryBuild = async (cand, label) => {
+  // помощник: опитай init() / new / direct-call
+  const tryBuild = async (cand, label, tried) => {
     if (!cand) return null;
     tried.push(label);
-    if (typeof cand === "function") {
-      return await cand(opts);
-    }
+
+    // 1) init()
     if (typeof cand?.init === "function") {
-      return await cand.init(opts);
+      try { return await cand.init(opts); } catch {}
+    }
+    // 2) new Class()
+    try {
+      // ако е клас – това ще успее
+      return new cand(opts);
+    } catch {}
+    // 3) direct call като фабрика
+    if (typeof cand === "function") {
+      try { return await cand(opts); } catch {}
     }
     return null;
   };
 
-  // логни какво реално виждаме в пакета (еднократно)
+  const tried = [];
+
+  // полезен лог за формата на модула
   try {
-    const keys = Object.keys(SignNS || {});
-    console.log("[WC] sign-client keys:", keys);
+    console.log("[WC] keys:", Object.keys(SignNS || {}));
     if (SignNS?.default && typeof SignNS.default === "object") {
-      console.log("[WC] sign-client.default keys:", Object.keys(SignNS.default));
+      console.log("[WC] default keys:", Object.keys(SignNS.default));
     }
-  } catch { /* ignore */ }
+  } catch {}
 
-  // 1) namespace модул
+  // последователност от кандидати (най-вероятни първи)
   let c =
-    (await tryBuild(SignNS, "SignNS")) ||
-    (await tryBuild(SignNS?.default, "SignNS.default")) ||
-    (await tryBuild(SignNS?.SignClient, "SignNS.SignClient")) ||
-    (await tryBuild(SignNS?.default?.SignClient, "SignNS.default.SignClient"));
+    (await tryBuild(SignNS?.SignClient, "SignNS.SignClient", tried)) ||
+    (await tryBuild(SignNS?.default?.SignClient, "default.SignClient", tried)) ||
+    (await tryBuild(SignNS?.default, "default", tried)) ||
+    (await tryBuild(SignNS, "namespace", tried));
 
-  // 2) опитай различни dist входни точки (някои среди ги искат)
+  // пробвай и dist входни точки
   if (!c) {
     try {
       const Dist = await import("@walletconnect/sign-client/dist/index.js");
+      const D = Dist?.SignClient ?? Dist?.default?.SignClient ?? Dist?.default ?? Dist;
       c =
-        (await tryBuild(Dist?.default ?? Dist, "dist/index")) ||
-        (await tryBuild(Dist?.SignClient, "dist/index SignClient"));
-    } catch { /* ignore */ }
+        (await tryBuild(D, "dist/index", tried)) ||
+        (await tryBuild(D?.SignClient, "dist/index SignClient", tried));
+    } catch {}
   }
   if (!c) {
     try {
       const DistEsm = await import("@walletconnect/sign-client/dist/esm/index.js");
+      const D = DistEsm?.SignClient ?? DistEsm?.default?.SignClient ?? DistEsm?.default ?? DistEsm;
       c =
-        (await tryBuild(DistEsm?.default ?? DistEsm, "dist/esm/index")) ||
-        (await tryBuild(DistEsm?.SignClient, "dist/esm/index SignClient"));
-    } catch { /* ignore */ }
+        (await tryBuild(D, "dist/esm/index", tried)) ||
+        (await tryBuild(D?.SignClient, "dist/esm/index SignClient", tried));
+    } catch {}
   }
 
   if (!c) {
-    console.error("[WC] Tried shapes:", tried.join(" -> "));
+    console.error("[WC] tried:", tried.join(" -> "));
     throw new Error("Cannot create WalletConnect SignClient from any export shape");
   }
-  console.log("[WC] SignClient created via:", tried.at(-1));
+  console.log("[WC] created via:", tried.at(-1));
   return c;
 }
 
