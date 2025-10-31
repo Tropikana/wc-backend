@@ -127,21 +127,28 @@ app.get("/wc-uri", async (_req, res) => {
     pendings.set(id, { approval, session: null, createdAt: Date.now() });
 
     approval()
-      .then(async (session) => {
-        // Примерен акаунт: "eip155:1:0xabc..."
-        const acct = session.namespaces.eip155.accounts[0];
-        const [, chainStr, addr] = acct.split(":");
+  .then(async (session) => {
+    const ns = session.namespaces?.eip155;
+    // Примерен акаунт: "eip155:1:0xabc..."
+    const acct = ns.accounts[0];
+    const [, chainStr, addr] = acct.split(":");
 
-        // Малък delay – иначе при някои билдове на MM UI може да „примигне“ и да се затвори
-        await sleep(300);
+    await sleep(300); // micro-дилей за стабилен UI
 
-        pendings.set(id, {
-          approval: null,
-          session: { topic: session.topic, address: addr, chainId: Number(chainStr) },
-          createdAt: Date.now()
-        });
-      })
-      .catch(() => pendings.delete(id));
+    pendings.set(id, {
+      approval: null,
+      session: {
+        topic: session.topic,
+        address: addr,
+        chainId: Number(chainStr),
+        chains: ns?.chains || [],        // <— добавихме
+        methods: ns?.methods || []       // <— добавихме
+      },
+      createdAt: Date.now()
+    });
+  })
+  .catch(() => pendings.delete(id));
+
 
     res.json({ id, uri });
   } catch (e) {
@@ -184,97 +191,118 @@ app.post("/wc-login", async (req, res) => {
     const item = pendings.get(id);
     if (!item || !item.session) return res.status(400).json({ error: "no_session" });
 
-    // Сигурност: стартни core при хибернация
     if (signClient?.core?.start) await signClient.core.start();
 
-    const { topic, address } = item.session;
+    const { topic, address, chains = [], methods = [] } = item.session;
 
-    // 1) Използваме одобрената от уолета EVM верига
+    // 1) Верига: ползваме тази от сесията (ако липсва — падаме към одобрената chainId)
     const approvedChainId = Number(item.session.chainId || 1);
-    const chain = `eip155:${approvedChainId}`;
+    const chosenChain = chains.find(c => c.startsWith("eip155:")) || `eip155:${approvedChainId}`;
+    const chosenChainId = Number(chosenChain.split(":")[1] || approvedChainId);
 
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const toHex = (s) => (s?.startsWith?.("0x") ? s : "0x" + Buffer.from(String(s), "utf8").toString("hex"));
 
-    // 2) „Събуждане“ и синхрон на веригата (дори да е същата)
+    // 2) „Събуждане“ и синхронизиране на веригата (дори да е същата)
     try {
       await signClient.request({
         topic,
-        chainId: chain,
+        chainId: `eip155:${chosenChainId}`,
         request: {
           method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x" + approvedChainId.toString(16) }]
+          params: [{ chainId: "0x" + chosenChainId.toString(16) }]
         }
       });
       await sleep(250);
-    } catch {
-      /* ignore – не е критично */
+    } catch (e) {
+      // Не е фатално; често MM връща грешка, ако вече е на същата верига
     }
 
-    // 3) Съобщение за подпис
-    const nonce = crypto.randomBytes(8).toString("hex");
-    const message =
-      `Login to 3DHome4U\n` +
-      `Address: ${address}\n` +
-      `Nonce: ${nonce}\n` +
-      `Issued At: ${new Date().toISOString()}`;
+    // 3) Избираме какво изобщо е разрешено да искаме
+    const allowed = new Set(methods.map(m => m.toLowerCase()));
+    const tryQueue = [];
 
-    const hexMsg = toHex(message);
+    if (allowed.has("personal_sign")) {
+      const nonce = crypto.randomBytes(8).toString("hex");
+      const message =
+        `Login to 3DHome4U\n` +
+        `Address: ${address}\n` +
+        `Nonce: ${nonce}\n` +
+        `Issued At: ${new Date().toISOString()}`;
 
-    const attempts = [
-      { method: "personal_sign", params: [hexMsg, address] },
-      { method: "personal_sign", params: [address, hexMsg] },
-      { method: "personal_sign", params: [message, address] },
-      { method: "eth_sign",      params: [address, hexMsg] },
-      {
-        method: "eth_signTypedData_v3",
-        params: [
-          address,
-          JSON.stringify({
-            types: {
-              EIP712Domain: [{ name: "name", type: "string" }],
-              Mail: [{ name: "contents", type: "string" }]
-            },
-            domain: { name: "3DHome4U" },
-            primaryType: "Mail",
-            message: { contents: message }
-          })
-        ]
+      const hexMsg = toHex(message);
+
+      // и двата реда (hex, address) и (address, hex) — MM приема и двата
+      tryQueue.push({ method: "personal_sign", params: [hexMsg, address], payload: { address, message } });
+      tryQueue.push({ method: "personal_sign", params: [address, hexMsg], payload: { address, message } });
+      tryQueue.push({ method: "personal_sign", params: [message, address], payload: { address, message } });
+    }
+
+    if (allowed.has("eth_sign")) {
+      const nonce = crypto.randomBytes(8).toString("hex");
+      const msg = `Login 3DHome4U (nonce:${nonce})`;
+      tryQueue.push({ method: "eth_sign", params: [address, toHex(msg)], payload: { address, message: msg } });
+    }
+
+    // typed data (v3/v4) – добавяме само ако са разрешени
+    const typedMsg = (txt) => JSON.stringify({
+      types: {
+        EIP712Domain: [{ name: "name", type: "string" }],
+        Mail: [{ name: "contents", type: "string" }]
       },
-      {
-        method: "eth_signTypedData_v4",
-        params: [
-          address,
-          JSON.stringify({
-            types: {
-              EIP712Domain: [{ name: "name", type: "string" }],
-              Mail: [{ name: "contents", type: "string" }]
-            },
-            domain: { name: "3DHome4U" },
-            primaryType: "Mail",
-            message: { contents: message }
-          })
-        ]
-      }
-    ];
+      domain: { name: "3DHome4U" },
+      primaryType: "Mail",
+      message: { contents: txt }
+    });
 
-    let signature = null;
-    for (const a of attempts) {
-      await sleep(200); // да не се „задуши“ UI-то в MetaMask
+    if (allowed.has("eth_signtypeddata_v3") || allowed.has("eth_signtypeddata")) {
+      tryQueue.push({
+        method: "eth_signTypedData_v3",
+        params: [address, typedMsg("Login to 3DHome4U (v3)")],
+        payload: { address }
+      });
+    }
+    if (allowed.has("eth_signtypeddata_v4")) {
+      tryQueue.push({
+        method: "eth_signTypedData_v4",
+        params: [address, typedMsg("Login to 3DHome4U (v4)")],
+        payload: { address }
+      });
+    }
+
+    if (!tryQueue.length) {
+      return res.status(400).json({
+        error: "no_approved_methods",
+        approved: Array.from(allowed)
+      });
+    }
+
+    // 4) Пускаме опитите един по един, с пауза — за да се показва стабилно UI-то
+    let result = null, used = null, lastErr = null;
+    for (const attempt of tryQueue) {
+      await sleep(200);
       try {
-        signature = await signClient.request({
+        used = attempt.method;
+        result = await signClient.request({
           topic,
-          chainId: chain,
-          request: { method: a.method, params: a.params }
+          chainId: `eip155:${chosenChainId}`,
+          request: { method: attempt.method, params: attempt.params }
         });
-        if (signature) { break; }
+        if (result) {
+          // успех
+          const payload = attempt.payload || {};
+          return res.json({ method: used, signature: result, ...payload });
+        }
       } catch (e) {
-        // пробвай следващия метод
+        lastErr = e?.message || String(e);
+        // продължаваме със следващия метод
       }
     }
 
-    if (!signature) return res.status(500).json({ error: "sign_rejected_or_unsupported" });
-    res.json({ address, message, signature });
+    return res.status(500).json({
+      error: "sign_rejected_or_unsupported",
+      lastError: lastErr
+    });
   } catch (e) {
     res.status(500).json({ error: e?.message || "sign failed" });
   }
