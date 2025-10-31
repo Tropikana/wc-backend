@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Влизане с WalletConnect / MetaMask</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    #qr img { max-width: 100%; height: auto; }
+    button { padding: .7rem 1.1rem; font-size: 1rem; }
+    .row { margin: .75rem 0; }
+    code { background:#f3f3f3; padding:.2rem .4rem; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <h1>Влизане с WalletConnect / MetaMask</h1>
+  <p>1) Натисни бутона, 2) сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
+
+  <div class="row"><button id="btn">Генерирай QR</button></div>
+  <div id="qr" class="row"></div>
+  <div id="status" class="row"></div>
+  <div id="result" class="row"></div>
+
+  <script>
+    const btn = document.getElementById("btn");
+    const qrDiv = document.getElementById("qr");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+
+    // ако фронтендът се сервира от друг домейн, смени base със бекенд URL-a
+    const base = ""; // празно = същият хост (Render бекенда)
+
+    let poll = null;
+    function stopPoll(){ if (poll) { clearInterval(poll); poll = null; } }
+
+    btn.addEventListener("click", async () => {
+      stopPoll();
+      qrDiv.innerHTML = ""; statusEl.textContent = "Създаване на сесия..."; resultEl.textContent = "";
+
+      const r = await fetch(base + "/wc-uri");
+      if (!r.ok) { statusEl.textContent = "Грешка при /wc-uri"; return; }
+      const { id, uri, expiresAt } = await r.json();
+
+      // ВАЖНО: URL-кодирай целия WalletConnect URI!
+      const imgSrc = "https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=" + encodeURIComponent(uri);
+      qrDiv.innerHTML = `<img src="${imgSrc}" alt="WalletConnect QR">`;
+      statusEl.innerHTML = `Статус: <b>pending</b> (валиден до <code>${expiresAt}</code>)`;
+
+      // Poll за статус
+      poll = setInterval(async () => {
+        const s = await fetch(base + `/wc-status?id=${encodeURIComponent(id)}`).then(x => x.json());
+        if (s.status === "approved") {
+          stopPoll();
+          statusEl.innerHTML = `Статус: <b>approved</b>`;
+          resultEl.innerHTML = `
+            <div>Topic: <code>${s.topic}</code></div>
+            <div>Address: <code>${s.address}</code></div>
+            <div>All addresses: <code>${(s.addresses||[]).join(", ")}</code></div>
+            <div>ChainId: <code>${s.chainId}</code></div>
+            <div>Chains: <code>${(s.chains||[]).join(", ")}</code></div>
+          `;
+        } else if (s.status === "expired") {
+          stopPoll();
+          statusEl.innerHTML = `Статус: <b>expired</b> — генерирай нов QR.`;
+        } else if (s.status === "not_found") {
+          stopPoll();
+          statusEl.innerHTML = `Статус: <b>not_found</b>`;
+        } else {
+          statusEl.innerHTML = `Статус: <b>pending</b> — одобри в MetaMask`;
+        }
+      }, 2000);
+    });
+  </script>
+</body>
+</html>
