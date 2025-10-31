@@ -7,7 +7,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ---------- УСТОЙЧИВО СЪЗДАВАНЕ НА КЛИЕНТА ----------
 const opts = {
   projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
@@ -20,69 +19,30 @@ const opts = {
   }
 };
 
-async function makeSignClient() {
-  const tryBuild = async (cand) => {
-    if (!cand) return null;
-    if (typeof cand?.init === "function") {
-      try { return await cand.init(opts); } catch {}
-    }
-    try { return new cand(opts); } catch {}
-    if (typeof cand === "function") {
-      try { return await cand(opts); } catch {}
-    }
-    return null;
-  };
+// --- Create SignClient (в твоя билд е клас) + start engine
+const SignClient = SignNS.SignClient ?? SignNS.default?.SignClient;
+if (!SignClient) throw new Error("SignClient class not found in @walletconnect/sign-client");
+const signClient = new SignClient(opts);
+if (signClient?.core?.start) await signClient.core.start();
 
-  let c =
-    (await tryBuild(SignNS?.SignClient)) ||
-    (await tryBuild(SignNS?.default?.SignClient)) ||
-    (await tryBuild(SignNS?.default)) ||
-    (await tryBuild(SignNS));
-
-  if (!c) {
-    try {
-      const Dist = await import("@walletconnect/sign-client/dist/index.js");
-      const D = Dist?.SignClient ?? Dist?.default?.SignClient ?? Dist?.default ?? Dist;
-      c = await tryBuild(D);
-    } catch {}
-  }
-  if (!c) {
-    try {
-      const DistEsm = await import("@walletconnect/sign-client/dist/esm/index.js");
-      const D = DistEsm?.SignClient ?? DistEsm?.default?.SignClient ?? DistEsm?.default ?? DistEsm;
-      c = await tryBuild(D);
-    } catch {}
-  }
-
-  if (!c) throw new Error("Cannot create WalletConnect SignClient from any export shape");
-
-  // ВАЖНО: стартираме engine, иначе connect хвърля "Not initialized. engine"
-  if (c?.core?.start) {
-    await c.core.start();
-  }
-
-  return c;
-}
-
-const signClient = await makeSignClient();
-// ----------------------------------------------------
-
-// Памет за чакащи сесии
+// In-memory storage
 const pendings = new Map(); // id -> { approval, session|null, createdAt }
+const nonces = new Map();   // id -> last nonce (за алтернативна валидация)
+
+// Helpers
+const utf8ToHex = (s) => "0x" + Buffer.from(s, "utf8").toString("hex");
 
 // 1) Връща wc: URI за QR
 app.get("/wc-uri", async (_req, res) => {
   try {
     const { uri, approval } = await signClient.connect({
-      // минимален handshake за да се появи "Connect"
       requiredNamespaces: {
         eip155: {
-          chains: ["eip155:1"],           // само ETH mainnet в първия екран
-          methods: ["personal_sign"],     // най-чистият метод
+          chains: ["eip155:1"],                 // минимално за да се покаже Connect
+          methods: ["personal_sign"],
           events: ["accountsChanged", "chainChanged"]
         }
       },
-      // останалото пожелателно – wallet-ът го добавя след Connect
       optionalNamespaces: {
         eip155: {
           chains: ["eip155:137", "eip155:25", "eip155:338"], // Polygon + Cronos
@@ -122,12 +82,48 @@ app.get("/wc-status", (req, res) => {
   if (!item) return res.json({ status: "not_found" });
   if (item.session) return res.json({ status: "approved", ...item.session });
 
-  // изтичане след ~2 мин
   if (Date.now() - item.createdAt > 2 * 60 * 1000) {
     pendings.delete(id);
     return res.json({ status: "expired" });
   }
   res.json({ status: "pending" });
+});
+
+// 3) Задейства подпис за логин (personal_sign)
+app.post("/wc-login", async (req, res) => {
+  try {
+    const id = String(req.body?.id || "");
+    const item = pendings.get(id);
+    if (!item || !item.session) return res.status(400).json({ error: "no_session" });
+
+    const { topic, address, chainId } = item.session;
+
+    // проста nonce-базирана „Sign-In“
+    const nonce = crypto.randomBytes(8).toString("hex");
+    nonces.set(id, nonce);
+
+    const message =
+      `Login to 3DHome4U\n` +
+      `Address: ${address}\n` +
+      `Nonce: ${nonce}\n` +
+      `Issued At: ${new Date().toISOString()}`;
+
+    const hexMsg = utf8ToHex(message);
+
+    const signature = await signClient.request({
+      topic,
+      chainId: `eip155:${chainId || 1}`,
+      request: {
+        method: "personal_sign",
+        params: [hexMsg, address] // MetaMask приема hex + адрес
+      }
+    });
+
+    // тук можеш да валидираш подписа (ecrecover) и да издадеш JWT/сесия
+    res.json({ signature, message, address });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || "sign failed" });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
