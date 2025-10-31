@@ -147,38 +147,70 @@ app.get("/wc-status", (req, res) => {
   res.json({ status: "pending" });
 });
 
-/* 3) Задейства подпис (login) чрез personal_sign */
+/* ===================== A) Ендпойнт за инспекция на сесията ===================== */
+// Постави ТУК
+app.get("/wc-session", (req, res) => {
+  const id = String(req.query.id || "");
+  const item = pendings.get(id);
+  if (!item || !item.session) return res.status(404).json({ error: "no_session" });
+  res.json(item.session); // ще върне {topic, address, chainId} и др. полета от session
+});
+/* ============================================================================== */
+
+/* ====================== B) Ендпойнт за подписване (login) ====================== */
+// Постави ТУК
+const toHex = s => (s.startsWith("0x") ? s : "0x" + Buffer.from(s, "utf8").toString("hex"));
+
+async function tryRequest(signClient, topic, chainId, method, params) {
+  try {
+    return await signClient.request({ topic, chainId, request: { method, params } });
+  } catch (e) {
+    console.log("[WC][request] fail:", method, JSON.stringify(params), e?.message || e);
+    return null;
+  }
+}
+
 app.post("/wc-login", async (req, res) => {
   try {
     const id = String(req.body?.id || "");
     const item = pendings.get(id);
     if (!item || !item.session) return res.status(400).json({ error: "no_session" });
 
+    // safety: на Free инстанции „събуждаме“ engine-а при нужда
+    if (signClient?.core?.start) await signClient.core.start();
+
     const { topic, address, chainId } = item.session;
+    const chain = Number(chainId) && [1,137,25,338].includes(Number(chainId))
+      ? `eip155:${chainId}` : "eip155:1";
 
     const nonce = crypto.randomBytes(8).toString("hex");
-    nonces.set(id, nonce);
-
     const message =
       `Login to 3DHome4U\n` +
       `Address: ${address}\n` +
       `Nonce: ${nonce}\n` +
       `Issued At: ${new Date().toISOString()}`;
 
-    const signature = await signClient.request({
-      topic,
-      chainId: `eip155:${chainId || 1}`,
-      request: {
-        method: "personal_sign",
-        params: [utf8ToHex(message), address] // MetaMask иска hex-съобщение + адрес
-      }
-    });
+    const attempts = [
+      { method: "personal_sign", params: [toHex(message), address] }, // MM mobile предпочита този ред
+      { method: "personal_sign", params: [address, toHex(message)] },
+      { method: "eth_sign",      params: [address, toHex(message)] },
+      { method: "eth_sign",      params: [toHex(message), address] }
+    ];
+
+    let signature = null;
+    for (const a of attempts) {
+      signature = await tryRequest(signClient, topic, chain, a.method, a.params);
+      if (signature) { console.log("[WC] signed with", a.method); break; }
+    }
+    if (!signature) return res.status(500).json({ error: "sign_rejected_or_unsupported" });
 
     res.json({ address, message, signature });
   } catch (e) {
     res.status(500).json({ error: e?.message || "sign failed" });
   }
 });
+/* ============================================================================== */
 
+// 4) app.listen – остави го НАЙ-ОТДОЛУ
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`WalletConnect backend listening on :${PORT}`));
