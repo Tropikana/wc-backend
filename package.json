@@ -1,11 +1,11 @@
 {
   "name": "wc-login-demo",
   "version": "1.0.0",
-  "type": "module",
   "private": true,
+  "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js"
+    "dev": "node server.js"
   },
   "dependencies": {
     "@walletconnect/sign-client": "2.11.0",
