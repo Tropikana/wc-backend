@@ -35,6 +35,10 @@ const utf8ToHex = (s) => "0x" + Buffer.from(s, "utf8").toString("hex");
 // 1) Връща wc: URI за QR
 app.get("/wc-uri", async (_req, res) => {
   try {
+    // важно: подсигуряваме engine-а точно преди connect
+    await signClient.core.start();
+    await new Promise(r => setTimeout(r, 100));
+    
     const { uri, approval } = await signClient.connect({
       requiredNamespaces: {
         eip155: {
