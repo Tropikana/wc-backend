@@ -97,21 +97,44 @@ const pendings = new Map(); // id -> { approval, session|null, createdAt }
 app.get("/wc-uri", async (_req, res) => {
   try {
     const { uri, approval } = await signClient.connect({
+      // минимални изисквания за първия екран (да изкара Connect)
       requiredNamespaces: {
         eip155: {
-          methods: [
-            "personal_sign",
-            "eth_sign",
-            "eth_signTypedData",
-            "eth_sendTransaction"
-          ],
-          chains: ["eip155:1", "eip155:137", "eip155:25", "eip155:338"],
-          events: ["accountsChanged", "chainChanged"]
+          chains: ["eip155:1"],              // само Ethereum mainnet
+          methods: ["personal_sign"],        // най-безобидният метод
+          events: ["accountsChanged","chainChanged"]
+        }
+      },
+      // всичко друго – пожелателно (MetaMask ще го добави след connect)
+      optionalNamespaces: {
+        eip155: {
+          chains: ["eip155:137","eip155:25","eip155:338"], // Polygon + Cronos
+          methods: ["eth_sign","eth_signTypedData","eth_sendTransaction"],
+          events: ["accountsChanged","chainChanged"]
         }
       }
     });
 
     if (!uri) return res.status(500).json({ error: "No URI returned" });
+
+    const id = crypto.randomUUID();
+    pendings.set(id, { approval, session: null, createdAt: Date.now() });
+
+    approval().then((session) => {
+      const acct = session.namespaces.eip155.accounts[0]; // "eip155:1:0x..."
+      const [, chainStr, addr] = acct.split(":");
+      pendings.set(id, {
+        approval: null,
+        session: { topic: session.topic, address: addr, chainId: Number(chainStr) },
+        createdAt: Date.now()
+      });
+    }).catch(() => pendings.delete(id));
+
+    res.json({ id, uri });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || "connect failed" });
+  }
+});
 
     const id = crypto.randomUUID();
     pendings.set(id, { approval, session: null, createdAt: Date.now() });
