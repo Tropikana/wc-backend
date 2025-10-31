@@ -7,46 +7,82 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ---------- WalletConnect клиент (клас) ----------
+// ---------- УСТОЙЧИВО СЪЗДАВАНЕ НА КЛИЕНТА ----------
 const opts = {
   projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
   metadata: {
     name: "3DHome4U",
     description: "UE5 login via WalletConnect",
-    url: "https://wc-backend-tpug.onrender.com",     // домейнът ти от allowlist
+    url: "https://wc-backend-tpug.onrender.com",
     icons: ["https://wc-backend-tpug.onrender.com/icon.png"],
     redirect: { native: "metamask://", universal: "https://metamask.app.link" }
   }
 };
 
-// В твоя билд пакетът има клас SignClient → ползваме new
-const SignClient = SignNS.SignClient ?? SignNS.default?.SignClient;
-if (!SignClient) {
-  throw new Error("SignClient class not found in @walletconnect/sign-client");
+async function makeSignClient() {
+  const tryBuild = async (cand) => {
+    if (!cand) return null;
+    if (typeof cand?.init === "function") {
+      try { return await cand.init(opts); } catch {}
+    }
+    try { return new cand(opts); } catch {}
+    if (typeof cand === "function") {
+      try { return await cand(opts); } catch {}
+    }
+    return null;
+  };
+
+  let c =
+    (await tryBuild(SignNS?.SignClient)) ||
+    (await tryBuild(SignNS?.default?.SignClient)) ||
+    (await tryBuild(SignNS?.default)) ||
+    (await tryBuild(SignNS));
+
+  if (!c) {
+    try {
+      const Dist = await import("@walletconnect/sign-client/dist/index.js");
+      const D = Dist?.SignClient ?? Dist?.default?.SignClient ?? Dist?.default ?? Dist;
+      c = await tryBuild(D);
+    } catch {}
+  }
+  if (!c) {
+    try {
+      const DistEsm = await import("@walletconnect/sign-client/dist/esm/index.js");
+      const D = DistEsm?.SignClient ?? DistEsm?.default?.SignClient ?? DistEsm?.default ?? DistEsm;
+      c = await tryBuild(D);
+    } catch {}
+  }
+
+  if (!c) throw new Error("Cannot create WalletConnect SignClient from any export shape");
+
+  // ВАЖНО: стартираме engine, иначе connect хвърля "Not initialized. engine"
+  if (c?.core?.start) {
+    await c.core.start();
+  }
+
+  return c;
 }
-const signClient = new SignClient(opts);
 
-// ВАЖНО: стартира вътрешния engine преди да ползваш connect()
-await signClient.core.start();
-// -------------------------------------------------
+const signClient = await makeSignClient();
+// ----------------------------------------------------
 
-// Проста памет за чакащи сесии
+// Памет за чакащи сесии
 const pendings = new Map(); // id -> { approval, session|null, createdAt }
 
 // 1) Връща wc: URI за QR
 app.get("/wc-uri", async (_req, res) => {
   try {
     const { uri, approval } = await signClient.connect({
-      // Минимално изискване за да се покаже 'Connect'
+      // минимален handshake за да се появи "Connect"
       requiredNamespaces: {
         eip155: {
-          chains: ["eip155:1"],                 // само ETH mainnet за първия екран
-          methods: ["personal_sign"],
+          chains: ["eip155:1"],           // само ETH mainnet в първия екран
+          methods: ["personal_sign"],     // най-чистият метод
           events: ["accountsChanged", "chainChanged"]
         }
       },
-      // Пожелателно – MetaMask може да добави след Connect
+      // останалото пожелателно – wallet-ът го добавя след Connect
       optionalNamespaces: {
         eip155: {
           chains: ["eip155:137", "eip155:25", "eip155:338"], // Polygon + Cronos
@@ -61,7 +97,6 @@ app.get("/wc-uri", async (_req, res) => {
     const id = crypto.randomUUID();
     pendings.set(id, { approval, session: null, createdAt: Date.now() });
 
-    // чакаме одобрение в уолета
     approval()
       .then((session) => {
         const acct = session.namespaces.eip155.accounts[0]; // "eip155:1:0x..."
@@ -85,7 +120,6 @@ app.get("/wc-status", (req, res) => {
   const id = String(req.query.id || "");
   const item = pendings.get(id);
   if (!item) return res.json({ status: "not_found" });
-
   if (item.session) return res.json({ status: "approved", ...item.session });
 
   // изтичане след ~2 мин
