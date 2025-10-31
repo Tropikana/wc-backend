@@ -32,10 +32,15 @@ const signClient = await makeSignClient({
   projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
   metadata: {
-    name: "3DHome4U UE5",
-    description: "Login via WalletConnect",
-    url: "https://www.3dhome4u.com",
-    icons: ["https://www.3dhome4u.com/favicon.ico"]
+    name: "3DHome4U",
+    description: "UE5 login via WalletConnect",
+    // ВАЖНО: използвай домейн, който е в Reown allowlist (Render URL-а)
+    url: "https://wc-backend-tpug.onrender.com",
+    icons: ["https://wc-backend-tpug.onrender.com/icon.png"],
+    // помага на някои уолети да се „върнат“ към приложението
+    redirect: {
+      native: "metamask://",
+      universal: "https://metamask.app.link"
   }
 });
 
@@ -48,8 +53,8 @@ app.get("/wc-uri", async (req, res) => {
     const { uri, approval } = await signClient.connect({
       requiredNamespaces: {
         eip155: {
-          methods: ["personal_sign","eth_signTypedData","eth_sendTransaction"],
-          chains: ["eip155:1","eip155:137","eip155:25","eip155:338"],
+          methods: ["personal_sign","eth_sign","eth_signTypedData","eth_sendTransaction"],
+          chains: ["eip155:1","eip155:137","eip155:25","eip155:338"], // ETH, Polygon, Cronos
           events: ["accountsChanged","chainChanged"]
         }
       }
