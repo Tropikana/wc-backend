@@ -49,7 +49,7 @@ app.get("/wc-uri", async (req, res) => {
       requiredNamespaces: {
         eip155: {
           methods: ["personal_sign","eth_signTypedData","eth_sendTransaction"],
-          chains: ["eip155:25","eip155:338"], // Cronos mainnet/testnet
+          chains: ["eip155:1","eip155:137","eip155:25","eip155:338"],
           events: ["accountsChanged","chainChanged"]
         }
       }
