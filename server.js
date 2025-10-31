@@ -152,7 +152,7 @@ app.get("/wc-uri", async (_req, res) => {
       .catch(() => pendings.delete(id));
 
     res.json({ id, uri });
-  } catch (e) {
+  } catch (e) { }
     res.status(500).json({ error: e?.message || "connect failed" });
   }
 });
