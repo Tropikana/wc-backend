@@ -1,157 +1,130 @@
-// server.js  (ESM)
-
 import express from "express";
 import cors from "cors";
-import SignClient from "@walletconnect/sign-client";
+import * as SignNS from "@walletconnect/sign-client";
+import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ---- helpers ---------------------------------------------------------------
+// ---------- УСТОЙЧИВО СЪЗДАВАНЕ НА КЛИЕНТА ----------
+const opts = {
+  projectId: process.env.WC_PROJECT_ID,
+  relayUrl: "wss://relay.walletconnect.com",
+  metadata: {
+    name: "3DHome4U",
+    description: "UE5 login via WalletConnect",
+    url: "https://wc-backend-tpug.onrender.com",
+    icons: ["https://wc-backend-tpug.onrender.com/icon.png"],
+    redirect: { native: "metamask://", universal: "https://metamask.app.link" }
+  }
+};
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const cryptoRandomId =
-  () => (globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2));
+async function makeSignClient() {
+  // помощник: опитай init() / new / direct-call
+  const tryBuild = async (cand, label, tried) => {
+    if (!cand) return null;
+    tried.push(label);
 
-// изчакване (с ретраили) при cold start на Render
-async function waitFor(ms, fn, retries = 1) {
-  let err;
-  for (let i = 0; i <= retries; i++) {
+    // 1) init()
+    if (typeof cand?.init === "function") {
+      try { return await cand.init(opts); } catch {}
+    }
+    // 2) new Class()
     try {
-      return await fn();
-    } catch (e) {
-      err = e;
-      await sleep(ms);
+      // ако е клас – това ще успее
+      return new cand(opts);
+    } catch {}
+    // 3) direct call като фабрика
+    if (typeof cand === "function") {
+      try { return await cand(opts); } catch {}
     }
-  }
-  throw err;
-}
+    return null;
+  };
 
-// ---- WalletConnect client (кеширана инициализация) ------------------------
+  const tried = [];
 
-let clientPromise = null;
-
-async function ensureClient() {
-  if (clientPromise) return clientPromise;
-
-  clientPromise = (async () => {
-    if (!process.env.WC_PROJECT_ID) {
-      throw new Error("Missing WC_PROJECT_ID");
-    }
-
-    const client = await SignClient.init({
-      projectId: process.env.WC_PROJECT_ID,
-      relayUrl: "wss://relay.walletconnect.com",
-      metadata: {
-        name: "3DHome4U UE5",
-        description: "Login via WalletConnect",
-        url: "https://www.3dhome4u.com",
-        icons: ["https://www.3dhome4u.com/favicon.ico"],
-      },
-    });
-
-    // опитай да „вдигнеш“ relayer и core
-    try { await client.core?.relayer?.connect?.(); } catch {}
-    try { await client.core?.start?.(); } catch {}
-
-    console.log("[WC] client ready");
-    return client;
-  })();
-
-  return clientPromise;
-}
-
-// ---- in-memory store за чакащи сесии --------------------------------------
-
-/** Map<id, {approval: Function|null, session: {topic,address,chainId,chains,methods}|null, createdAt:number}> */
-const pendings = new Map();
-
-// ---- health / info ---------------------------------------------------------
-
-app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/", (_req, res) => res.json({ ok: true, name: "wc-backend" }));
-
-// ---- warmup: „събуди“ клиента/релайъра ------------------------------------
-
-app.get("/warmup", async (_req, res) => {
+  // полезен лог за формата на модула
   try {
-    const c = await ensureClient();
-    try { await c.core?.relayer?.connect?.(); } catch {}
-    try { await c.core?.start?.(); } catch {}
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "warmup failed" });
+    console.log("[WC] keys:", Object.keys(SignNS || {}));
+    if (SignNS?.default && typeof SignNS.default === "object") {
+      console.log("[WC] default keys:", Object.keys(SignNS.default));
+    }
+  } catch {}
+
+  // последователност от кандидати (най-вероятни първи)
+  let c =
+    (await tryBuild(SignNS?.SignClient, "SignNS.SignClient", tried)) ||
+    (await tryBuild(SignNS?.default?.SignClient, "default.SignClient", tried)) ||
+    (await tryBuild(SignNS?.default, "default", tried)) ||
+    (await tryBuild(SignNS, "namespace", tried));
+
+  // пробвай и dist входни точки
+  if (!c) {
+    try {
+      const Dist = await import("@walletconnect/sign-client/dist/index.js");
+      const D = Dist?.SignClient ?? Dist?.default?.SignClient ?? Dist?.default ?? Dist;
+      c =
+        (await tryBuild(D, "dist/index", tried)) ||
+        (await tryBuild(D?.SignClient, "dist/index SignClient", tried));
+    } catch {}
   }
-});
+  if (!c) {
+    try {
+      const DistEsm = await import("@walletconnect/sign-client/dist/esm/index.js");
+      const D = DistEsm?.SignClient ?? DistEsm?.default?.SignClient ?? DistEsm?.default ?? DistEsm;
+      c =
+        (await tryBuild(D, "dist/esm/index", tried)) ||
+        (await tryBuild(D?.SignClient, "dist/esm/index SignClient", tried));
+    } catch {}
+  }
 
-// ---- /wc-uri: генерира wc: URI + ID ---------------------------------------
+  if (!c) {
+    console.error("[WC] tried:", tried.join(" -> "));
+    throw new Error("Cannot create WalletConnect SignClient from any export shape");
+  }
+  console.log("[WC] created via:", tried.at(-1));
+  return c;
+}
 
+const signClient = await makeSignClient();
+// ----------------------------------------------------
+
+// Памет за чакащи сесии
+const pendings = new Map(); // id -> { approval, session|null, createdAt }
+
+// 1) Връща wc: URI за QR
 app.get("/wc-uri", async (_req, res) => {
   try {
-    const client = await ensureClient();
+    const { uri, approval } = await signClient.connect({
+      requiredNamespaces: {
+        eip155: {
+          methods: [
+            "personal_sign",
+            "eth_sign",
+            "eth_signTypedData",
+            "eth_sendTransaction"
+          ],
+          chains: ["eip155:1", "eip155:137", "eip155:25", "eip155:338"],
+          events: ["accountsChanged", "chainChanged"]
+        }
+      }
+    });
 
-    // малък delay при cold start
-    await sleep(300);
-    try { await client.core?.relayer?.connect?.(); } catch {}
-    await sleep(250);
+    if (!uri) return res.status(500).json({ error: "No URI returned" });
 
-    const requiredNamespaces = {
-      eip155: {
-        methods: [
-          "personal_sign",
-          "eth_signTypedData",
-          "eth_sendTransaction",
-          "eth_chainId",
-        ],
-        chains: ["eip155:25", "eip155:338", "eip155:1"],
-        events: ["accountsChanged", "chainChanged"],
-      },
-    };
-
-    // Два опита за connect (двойният опит често стабилизира UI-то при студен релайър)
-    let out = await client.connect({ requiredNamespaces }).catch(() => null);
-    if (!out?.uri) {
-      await sleep(650);
-      out = await client.connect({ requiredNamespaces }).catch(() => null);
-    }
-    if (!out?.uri) {
-      return res.status(503).json({ error: "Not initialized. engine" });
-    }
-
-    const { uri, approval } = out;
-    const id = cryptoRandomId();
+    const id = crypto.randomUUID();
     pendings.set(id, { approval, session: null, createdAt: Date.now() });
 
-    // След като потребителят одобри в MetaMask:
     approval()
-      .then(async (session) => {
-        const ns = session.namespaces?.eip155;
-        const acct = ns?.accounts?.[0]; // "eip155:<chainId>:0x..."
-        if (!acct) return;
-
+      .then((session) => {
+        const acct = session.namespaces.eip155.accounts[0]; // "eip155:1:0x..."
         const [, chainStr, addr] = acct.split(":");
         pendings.set(id, {
           approval: null,
-          session: {
-            topic: session.topic,
-            address: addr,
-            chainId: Number(chainStr),
-            chains: ns?.chains || [],
-            methods: ns?.methods || [],
-          },
-          createdAt: Date.now(),
+          session: { topic: session.topic, address: addr, chainId: Number(chainStr) },
+          createdAt: Date.now()
         });
-
-        // мини-пинг към уолета (помага на някои телефони да покажат UI веднага)
-        await sleep(300);
-        try {
-          await client.request({
-            topic: session.topic,
-            chainId: `eip155:${Number(chainStr)}`,
-            request: { method: "eth_chainId", params: [] },
-          });
-        } catch {}
       })
       .catch(() => pendings.delete(id));
 
@@ -161,81 +134,20 @@ app.get("/wc-uri", async (_req, res) => {
   }
 });
 
-// ---- /wc-status: проверка на статуса --------------------------------------
-
+// 2) Проверка на статуса
 app.get("/wc-status", (req, res) => {
   const id = String(req.query.id || "");
   const item = pendings.get(id);
   if (!item) return res.json({ status: "not_found" });
 
-  if (item.session) {
-    const { topic, address, chainId, chains = [], methods = [] } = item.session;
-    return res.json({
-      status: "approved",
-      topic,
-      address,
-      chainId,
-      chains,
-      methods,
-    });
-  }
+  if (item.session) return res.json({ status: "approved", ...item.session });
 
-  // изтичане след 2 минути
   if (Date.now() - item.createdAt > 2 * 60 * 1000) {
     pendings.delete(id);
     return res.json({ status: "expired" });
   }
-
-  return res.json({ status: "pending" });
+  res.json({ status: "pending" });
 });
 
-// ---- /wc-login: примерна заявка за подписване ------------------------------
-
-/**
- * POST /wc-login
- * body: { id: string, message?: string }
- *
- * - намира одобрената сесия от /wc-uri → /wc-status
- * - вика personal_sign към MetaMask
- */
-app.post("/wc-login", async (req, res) => {
-  try {
-    const { id, message } = req.body || {};
-    if (!id) return res.status(400).json({ error: "Missing id" });
-
-    const item = pendings.get(id);
-    if (!item?.session) return res.status(400).json({ error: "Not approved" });
-
-    const client = await ensureClient();
-    const { topic, address, chainId } = item.session;
-    const msg = message || `Login to 3DHome4U at ${new Date().toISOString()}`;
-
-    // personal_sign: [hexMessage, address]
-    const hex = "0x" + Buffer.from(msg, "utf8").toString("hex");
-    const signature = await waitFor(
-      300,
-      () =>
-        client.request({
-          topic,
-          chainId: `eip155:${Number(chainId)}`,
-          request: {
-            method: "personal_sign",
-            params: [hex, address],
-          },
-        }),
-      1 // 1 повторен опит
-    );
-
-    return res.json({ ok: true, address, chainId, signature });
-  } catch (e) {
-    console.error("[/wc-login] error:", e?.message);
-    res.status(500).json({ error: e?.message || "login failed" });
-  }
-});
-
-// ---- start -----------------------------------------------------------------
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () =>
-  console.log(`WalletConnect backend listening on :${PORT}`)
-);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`WalletConnect backend listening on :${PORT}`));
