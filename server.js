@@ -95,28 +95,22 @@ async function wcRequest(topic, chainId, method, params) {
   }
 }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 /* ------------------------------------------------------------------
    1) Връща wc: URI за QR / deeplink
 ------------------------------------------------------------------- */
-app.get("/wc-uri", async (_req, res) => {
+app.get("/wc-uri", async (req, res) => {
   try {
     if (signClient?.core?.start) await signClient.core.start();
-    await sleep(100); // micro-stabilize
 
     const { uri, approval } = await signClient.connect({
-      // По-надеждно за MetaMask: минимален required, останалото – optional
       requiredNamespaces: {
         eip155: {
-          chains: ["eip155:1"],
-          methods: ["personal_sign"],
-          events: ["accountsChanged", "chainChanged"]
-        }
-      },
-      optionalNamespaces: {
-        eip155: {
-          chains: ["eip155:137", "eip155:25", "eip155:338"],
-          methods: ["eth_sign", "eth_signTypedData", "eth_signTypedData_v4", "eth_sendTransaction"],
-          events: ["accountsChanged", "chainChanged"]
+          // остави само това, което реално ще ползваш
+          methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v3","eth_signTypedData_v4"],
+          chains: ["eip155:1","eip155:25","eip155:137","eip155:338"], // примери
+          events: ["accountsChanged","chainChanged"]
         }
       }
     });
@@ -124,32 +118,48 @@ app.get("/wc-uri", async (_req, res) => {
     if (!uri) return res.status(500).json({ error: "No URI returned" });
 
     const id = crypto.randomUUID();
+    // първо маркираме "pending"
     pendings.set(id, { approval, session: null, createdAt: Date.now() });
 
+    // когато wallet-ът одобри -> записваме сесията + пингваме
     approval()
-  .then(async (session) => {
-    const ns = session.namespaces?.eip155;
-    // Примерен акаунт: "eip155:1:0xabc..."
-    const acct = ns.accounts[0];
-    const [, chainStr, addr] = acct.split(":");
+      .then(async (session) => {
+        const ns = session.namespaces?.eip155;
+        const acct = ns?.accounts?.[0];                 // "eip155:1:0xabc..."
+        if (!acct) return;                              // safety
+        const [, chainStr, addr] = acct.split(":");
 
-    await sleep(300); // micro-дилей за стабилен UI
+        // кратка пауза за стабилен UI
+        await sleep(300);
 
-    pendings.set(id, {
-      approval: null,
-      session: {
-        topic: session.topic,
-        address: addr,
-        chainId: Number(chainStr),
-        chains: ns?.chains || [],        // <— добавихме
-        methods: ns?.methods || []       // <— добавихме
-      },
-      createdAt: Date.now()
-    });
-  })
-  .catch(() => pendings.delete(id));
+        pendings.set(id, {
+          approval: null,
+          session: {
+            topic: session.topic,
+            address: addr,
+            chainId: Number(chainStr),
+            chains: ns?.chains || [],
+            methods: ns?.methods || []
+          },
+          createdAt: Date.now()
+        });
 
+        // "пинг" към уолета – често „събужда“ модала
+        setTimeout(async () => {
+          try {
+            const s = pendings.get(id)?.session;
+            if (!s) return;
+            await signClient.request({
+              topic: s.topic,
+              chainId: `eip155:${s.chainId}`,
+              request: { method: "eth_chainId", params: [] }
+            });
+          } catch (_) {}
+        }, 300);
+      })
+      .catch(() => pendings.delete(id));
 
+    // връщаме wc: URI веднага – фронтът да покаже QR/deeplink
     res.json({ id, uri });
   } catch (e) {
     res.status(500).json({ error: e?.message || "connect failed" });
