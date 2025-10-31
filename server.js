@@ -95,8 +95,6 @@ async function wcRequest(topic, chainId, method, params) {
   }
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 /* ------------------------------------------------------------------
    1) Връща wc: URI за QR / deeplink
 ------------------------------------------------------------------- */
