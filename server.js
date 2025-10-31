@@ -26,6 +26,9 @@ if (!SignClient) {
   throw new Error("SignClient class not found in @walletconnect/sign-client");
 }
 const signClient = new SignClient(opts);
+
+// ВАЖНО: стартира вътрешния engine преди да ползваш connect()
+await signClient.core.start();
 // -------------------------------------------------
 
 // Проста памет за чакащи сесии
