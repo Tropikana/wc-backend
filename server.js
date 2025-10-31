@@ -30,7 +30,7 @@ async function getSignClient() {
     metadata: {
       name: "3DHome4U Login",
       description: "Login via WalletConnect / MetaMask",
-      url: FRONTEND_URL, // трябва да е в allowlist в WalletConnect Cloud
+      url: "https://wc-backend-tpug.onrender.com", // трябва да е в allowlist в WalletConnect Cloud
       icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
     }
   });
