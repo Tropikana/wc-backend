@@ -7,15 +7,14 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Инициализация на WalletConnect клиента
+// WalletConnect клиент
 const signClient = await SignClient.init({
   projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
   metadata: {
     name: "3DHome4U",
     description: "UE5 login via WalletConnect",
-    // използвай домейн, който е в Reown allowlist
-    url: "https://wc-backend-tpug.onrender.com",
+    url: "https://wc-backend-tpug.onrender.com", // домейнът ти от allowlist
     icons: ["https://wc-backend-tpug.onrender.com/icon.png"],
     redirect: {
       native: "metamask://",
@@ -24,24 +23,18 @@ const signClient = await SignClient.init({
   }
 });
 
-// Памет за чакащи сесии
+// памет за чакащи сесии
 const pendings = new Map(); // id -> { approval, session|null, createdAt }
 
-// 1) Връща wc: URI за QR
+// 1) връща wc: URI за QR
 app.get("/wc-uri", async (req, res) => {
   try {
     const { uri, approval } = await signClient.connect({
       requiredNamespaces: {
         eip155: {
-          methods: [
-            "personal_sign",
-            "eth_sign",
-            "eth_signTypedData",
-            "eth_sendTransaction"
-          ],
-          // добавяме ETH, Polygon и Cronos
-          chains: ["eip155:1", "eip155:137", "eip155:25", "eip155:338"],
-          events: ["accountsChanged", "chainChanged"]
+          methods: ["personal_sign","eth_sign","eth_signTypedData","eth_sendTransaction"],
+          chains: ["eip155:1","eip155:137","eip155:25","eip155:338"], // ETH, Polygon, Cronos
+          events: ["accountsChanged","chainChanged"]
         }
       }
     });
@@ -51,22 +44,16 @@ app.get("/wc-uri", async (req, res) => {
     const id = crypto.randomUUID();
     pendings.set(id, { approval, session: null, createdAt: Date.now() });
 
-    // чакаме одобрение в уолета
-    approval()
-      .then((session) => {
-        const acct = session.namespaces.eip155.accounts[0]; // "eip155:1:0xabc..."
-        const [, chainStr, addr] = acct.split(":");
-        pendings.set(id, {
-          approval: null,
-          session: {
-            topic: session.topic,
-            address: addr,
-            chainId: Number(chainStr)
-          },
-          createdAt: Date.now()
-        });
-      })
-      .catch(() => pendings.delete(id));
+    // чакаме одобрение
+    approval().then((session) => {
+      const acct = session.namespaces.eip155.accounts[0]; // "eip155:1:0x..."
+      const [, chainStr, addr] = acct.split(":");
+      pendings.set(id, {
+        approval: null,
+        session: { topic: session.topic, address: addr, chainId: Number(chainStr) },
+        createdAt: Date.now()
+      });
+    }).catch(() => pendings.delete(id));
 
     res.json({ id, uri });
   } catch (e) {
@@ -74,15 +61,13 @@ app.get("/wc-uri", async (req, res) => {
   }
 });
 
-// 2) Проверка на статуса
+// 2) статус на сесията
 app.get("/wc-status", (req, res) => {
   const id = String(req.query.id || "");
   const item = pendings.get(id);
   if (!item) return res.json({ status: "not_found" });
-
   if (item.session) return res.json({ status: "approved", ...item.session });
 
-  // изтичане след ~2 мин
   if (Date.now() - item.createdAt > 2 * 60 * 1000) {
     pendings.delete(id);
     return res.json({ status: "expired" });
@@ -91,6 +76,4 @@ app.get("/wc-status", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`WalletConnect backend listening on :${PORT}`)
-);
+app.listen(PORT, () => console.log(`WalletConnect backend listening on :${PORT}`));
