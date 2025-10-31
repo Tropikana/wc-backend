@@ -31,22 +31,31 @@
       <div id="result" class="row"></div>
     </div>
   </div>
+
   <script>
     const btn=document.getElementById("btn"),qrDiv=document.getElementById("qr"),statusEl=document.getElementById("status"),resultEl=document.getElementById("result");
-    const base=""; // сервира се от същия домейн
+    const base=""; // страницата се сервира от същия домейн (бекенда)
     let poll=null; const stop=()=>{ if(poll){clearInterval(poll); poll=null;} };
 
     btn.addEventListener("click", async ()=>{
       stop(); qrDiv.innerHTML=""; statusEl.textContent="Създаване на сесия..."; statusEl.className=""; resultEl.textContent="";
       try{
         const r=await fetch(base+"/wc-uri");
-        if(!r.ok){ const t=await r.text().catch(()=> ""); statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`; if(t) resultEl.innerHTML=`<code>${t.slice(0,400)}</code>`; return; }
+        if(!r.ok){
+          const t=await r.text().catch(()=> "");
+          statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`;
+          if(t) resultEl.innerHTML=`<code>${t.slice(0,400)}</code>`;
+          return;
+        }
         const {id,uri,expiresAt}=await r.json();
+
+        // Тъмен QR: бял код върху тъмен фон
         const bg="14171b", fg="ffffff";
         const img=`https://api.qrserver.com/v1/create-qr-code/?size=400x400&bgcolor=${bg}&color=${fg}&data=${encodeURIComponent(uri)}`;
         qrDiv.innerHTML=`<img src="${img}" alt="WalletConnect QR">`;
         statusEl.innerHTML=`Статус: <b>pending</b> (валиден до <code>${expiresAt}</code>)`;
 
+        // Poll за статус
         poll=setInterval(async ()=>{
           const s=await fetch(base+`/wc-status?id=${encodeURIComponent(id)}`).then(x=>x.json());
           if(s.status==="approved"){ stop(); statusEl.innerHTML=`Статус: <b>approved</b>`;
@@ -55,7 +64,10 @@
           else if(s.status==="not_found"){ stop(); statusEl.innerHTML=`<span class="error">Статус: not_found</span>`; }
           else { statusEl.innerHTML=`Статус: <b>pending</b> — одобри в MetaMask`; }
         }, 2000);
-      }catch(e){ statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`; resultEl.textContent=String(e); }
+      }catch(e){
+        statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`;
+        resultEl.textContent=String(e);
+      }
     });
   </script>
 </body>
