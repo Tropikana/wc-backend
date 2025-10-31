@@ -184,14 +184,34 @@ app.post("/wc-login", async (req, res) => {
     const item = pendings.get(id);
     if (!item || !item.session) return res.status(400).json({ error: "no_session" });
 
+    // Сигурност: стартни core при хибернация
     if (signClient?.core?.start) await signClient.core.start();
 
-    const { topic, address, chainId } = item.session;
-    // За сигурност – ако веригата е „екзотична“, форсираме eip155:1 за подписа
-    const chain = [1, 137, 25, 338].includes(Number(chainId))
-      ? `eip155:${chainId}`
-      : "eip155:1";
+    const { topic, address } = item.session;
 
+    // 1) Използваме одобрената от уолета EVM верига
+    const approvedChainId = Number(item.session.chainId || 1);
+    const chain = `eip155:${approvedChainId}`;
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const toHex = (s) => (s?.startsWith?.("0x") ? s : "0x" + Buffer.from(String(s), "utf8").toString("hex"));
+
+    // 2) „Събуждане“ и синхрон на веригата (дори да е същата)
+    try {
+      await signClient.request({
+        topic,
+        chainId: chain,
+        request: {
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: "0x" + approvedChainId.toString(16) }]
+        }
+      });
+      await sleep(250);
+    } catch {
+      /* ignore – не е критично */
+    }
+
+    // 3) Съобщение за подпис
     const nonce = crypto.randomBytes(8).toString("hex");
     const message =
       `Login to 3DHome4U\n` +
@@ -199,12 +219,28 @@ app.post("/wc-login", async (req, res) => {
       `Nonce: ${nonce}\n` +
       `Issued At: ${new Date().toISOString()}`;
 
-    // Опити: personal_sign (hex/utf8, двата реда на params) + eth_sign + typedData v4
+    const hexMsg = toHex(message);
+
     const attempts = [
-      { method: "personal_sign", params: [toHex(message), address] },
-      { method: "personal_sign", params: [address, toHex(message)] },
+      { method: "personal_sign", params: [hexMsg, address] },
+      { method: "personal_sign", params: [address, hexMsg] },
       { method: "personal_sign", params: [message, address] },
-      { method: "eth_sign",      params: [address, toHex(message)] },
+      { method: "eth_sign",      params: [address, hexMsg] },
+      {
+        method: "eth_signTypedData_v3",
+        params: [
+          address,
+          JSON.stringify({
+            types: {
+              EIP712Domain: [{ name: "name", type: "string" }],
+              Mail: [{ name: "contents", type: "string" }]
+            },
+            domain: { name: "3DHome4U" },
+            primaryType: "Mail",
+            message: { contents: message }
+          })
+        ]
+      },
       {
         method: "eth_signTypedData_v4",
         params: [
@@ -224,9 +260,17 @@ app.post("/wc-login", async (req, res) => {
 
     let signature = null;
     for (const a of attempts) {
-      await sleep(150); // кратка пауза – избягва „полу-показан“ и затворен UI
-      signature = await wcRequest(topic, chain, a.method, a.params);
-      if (signature) { console.log("[WC] signed with", a.method); break; }
+      await sleep(200); // да не се „задуши“ UI-то в MetaMask
+      try {
+        signature = await signClient.request({
+          topic,
+          chainId: chain,
+          request: { method: a.method, params: a.params }
+        });
+        if (signature) { break; }
+      } catch (e) {
+        // пробвай следващия метод
+      }
     }
 
     if (!signature) return res.status(500).json({ error: "sign_rejected_or_unsupported" });
@@ -236,13 +280,3 @@ app.post("/wc-login", async (req, res) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   Healthcheck
-------------------------------------------------------------------- */
-app.get("/health", (_req, res) => res.json({ ok: true }));
-
-/* ------------------------------------------------------------------
-   Start
-------------------------------------------------------------------- */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`WalletConnect backend listening on :${PORT}`));
