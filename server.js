@@ -1,15 +1,27 @@
 import express from "express";
 import cors from "cors";
-import SignClient from "@walletconnect/sign-client";
+import SignClientModule from "@walletconnect/sign-client"; // може да е factory или обект с .init
 import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Инициализация на WalletConnect клиента (ползва Project ID от ENV)
-const signClient = await SignClient.init({
-  projectId: process.env.WC_PROJECT_ID, // <-- ще го зададем при deploy
+// Унифицирана функция за създаване на клиента
+const makeSignClient = async (opts) => {
+  // новите версии експортират ФУНКЦИЯ (factory)
+  if (typeof SignClientModule === "function") {
+    return await SignClientModule(opts);
+  }
+  // старите версии имат .init()
+  if (SignClientModule?.init) {
+    return await SignClientModule.init(opts);
+  }
+  throw new Error("Unsupported @walletconnect/sign-client export");
+};
+
+const signClient = await makeSignClient({
+  projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
   metadata: {
     name: "3DHome4U UE5",
