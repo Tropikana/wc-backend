@@ -28,7 +28,7 @@ const makeSignClient = async (opts) => {
   throw new Error("WalletConnect sign-client: unknown export shape");
 };
 
-const signClient = await makeSignClient({
+const signClient = await SignClient.init({
   projectId: process.env.WC_PROJECT_ID,
   relayUrl: "wss://relay.walletconnect.com",
   metadata: {
@@ -42,6 +42,7 @@ const signClient = await makeSignClient({
       native: "metamask://",
       universal: "https://metamask.app.link"
   }
+ }
 });
 
 // Проста памет за чакащи сесии (за продакшън -> Redis/DB)
