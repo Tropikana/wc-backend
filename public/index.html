@@ -69,4 +69,138 @@
 
             <div>Баланс:</div>
             <div><span id="balBadge" class="badge">—</span>
-              <button id="balBtn" class="btn" style="margin-left:8
+              <button id="balBtn" class="btn" style="margin-left:8px" disabled>Покажи баланс</button>
+            </div>
+          </div>
+
+          <div class="chips" id="chains"></div>
+
+          <div style="margin-top:14px">
+            <button id="copy" class="btn" disabled>Копирай адрес</button>
+          </div>
+
+          <div class="muted" style="margin-top:12px">Topic: <small id="topic">—</small></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API = new URLSearchParams(location.search).get("api") || "";
+const $ = s => document.querySelector(s);
+
+const chainSel= $("#chainSel");
+const genBtn  = $("#gen");
+const qrBox   = $("#qrBox");
+const stEl    = $("#st");
+const addrB   = $("#addrBadge");
+const netB    = $("#netBadge");
+const balB    = $("#balBadge");
+const balBtn  = $("#balBtn");
+const copyB   = $("#copy");
+const topicEl = $("#topic");
+const chainsEl= $("#chains");
+
+let currId=null, pollTimer=null, lastTopic=null, lastChainRef=null, lastAddress=null;
+
+function shortAddr(a){ return a ? (a.slice(0,6)+"..."+a.slice(-4)) : "—"; }
+function chainNameFromRef(ref){
+  const id = Number(String(ref).split(":")[1]||0);
+  const map = {1:"Ethereum Mainnet",56:"BNB Chain",97:"BNB Testnet",137:"Polygon",59144:"Linea",25:"Cronos",338:"Cronos Testnet",42161:"Arbitrum One",43114:"Avalanche C-Chain",8453:"Base"};
+  return map[id] || ref;
+}
+function setQR(uri){
+  const img = document.createElement("img");
+  img.alt = "QR";
+  img.src = "https://api.qrserver.com/v1/create-qr-code/?size=360x360&data="+encodeURIComponent(uri);
+  qrBox.innerHTML=""; qrBox.appendChild(img);
+}
+function renderStatus(data){
+  if (data.status === "approved"){
+    stEl.textContent = "Свързано"; stEl.className = "ok";
+    const addr = data.address || (data.addresses?.[0] || "");
+    addrB.textContent = shortAddr(addr);
+    netB.textContent  = data.networkName || "—";
+    copyB.disabled = !addr;
+    topicEl.textContent = data.topic || "—";
+    lastTopic = data.topic || null;
+    lastAddress = addr || null;
+    lastChainRef = (data.chains && data.chains[0]) || chainSel.value;
+    balBtn.disabled = !(lastAddress && lastChainRef);
+
+    chainsEl.innerHTML = "";
+    (data.chains||[]).forEach(ref=>{
+      const chip = document.createElement("span");
+      chip.className="chip";
+      chip.textContent = chainNameFromRef(ref);
+      const btn = document.createElement("button");
+      btn.className="mini"; btn.textContent="Switch";
+      btn.onclick = async () => {
+        if (!lastTopic) return;
+        btn.disabled = true;
+        try{
+          await fetch(API + "/wc-switch", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ topic: lastTopic, chainRef: ref }) });
+          setTimeout(()=>{ if(currId) pollOnce(); else pollOnceDirect(); }, 1200);
+        }finally{ btn.disabled=false; }
+      };
+      chip.appendChild(btn);
+      chainsEl.appendChild(chip);
+    });
+  } else if (data.status === "pending"){
+    stEl.textContent = "Очаква потвърждение…"; stEl.className = "";
+  } else if (data.status === "expired"){
+    stEl.textContent = "Изтекло – генерирай нов QR."; stEl.className = "err";
+  } else {
+    stEl.textContent = "not_found"; stEl.className = "err";
+  }
+}
+async function pollOnce(){
+  const r = await fetch(API + "/wc-status?id="+encodeURIComponent(currId));
+  renderStatus(await r.json());
+}
+async function pollOnceDirect(){
+  const r = await fetch(API + "/wc-status");
+  renderStatus(await r.json());
+}
+function startPolling(){ clearInterval(pollTimer); pollTimer = setInterval(pollOnce, 2000); }
+
+genBtn.onclick = async ()=>{
+  genBtn.disabled = true;
+  try{
+    stEl.textContent = "Генерирам…"; stEl.className = "muted";
+    const chain = chainSel.value; // избраната мрежа
+    const r = await fetch(API + "/wc-uri?chain="+encodeURIComponent(chain));
+    const data = await r.json();
+    if (!data.uri){ stEl.textContent="Грешка при /wc-uri"; stEl.className="err"; return; }
+    currId = data.id;
+    setQR(data.uri);
+    stEl.textContent = "Сканирай QR от MetaMask";
+    stEl.className = "";
+    startPolling();
+  }catch(e){
+    stEl.textContent = "Грешка"; stEl.className = "err";
+  }finally{
+    genBtn.disabled = false;
+  }
+};
+
+copyB.onclick = ()=>{ if (lastAddress) navigator.clipboard.writeText(lastAddress).catch(()=>{}); };
+
+balBtn.onclick = async ()=>{
+  if (!lastAddress || !lastChainRef) return;
+  balBtn.disabled = true;
+  try{
+    const r = await fetch(API + "/rpc-balance", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ chainRef: lastChainRef, address: lastAddress }) });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    balB.textContent = data.balanceEther + " (≈ 18d)";
+  }catch(e){ balB.textContent = "Грешка"; }
+  finally{ balBtn.disabled = false; }
+};
+
+// ако вече има сесия – покажи я
+pollOnceDirect();
+setInterval(()=>{ if(!currId) pollOnceDirect(); }, 5000);
+</script>
+</body>
+</html>
