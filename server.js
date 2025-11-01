@@ -42,7 +42,6 @@ async function loadSignClient() {
   const keys = Object.keys(mod || {});
   console.log(`[WC IMPORT] mode=${mode}, keys=${JSON.stringify(keys)}`);
 
-  // кандидати
   const Candidate =
     mod?.default?.init ? mod.default :
     mod?.SignClient?.init ? mod.SignClient :
@@ -53,10 +52,9 @@ async function loadSignClient() {
     throw new Error(`WalletConnect SignClient export not recognized. mode=${mode}, keys=${JSON.stringify(keys)}`);
   }
 
-  // нормализирана фабрика -> връща инстанция
   SignClientFactory = async (opts) => {
     if (typeof Candidate.init === "function") return Candidate.init(opts); // static init
-    const instance = new Candidate(opts);                                  // конструктор
+    const instance = new Candidate(opts);                                  // constructor
     if (!instance || typeof instance.connect !== "function") {
       throw new Error("Constructed SignClient has no .connect()");
     }
@@ -77,7 +75,7 @@ async function getSignClient() {
       metadata: {
         name: "3DHome4U Login",
         description: "Login via WalletConnect / MetaMask",
-        url: "https://wc-backend-tpug.onrender.com", // трябва да е в Allowlist
+        url: "https://wc-backend-tpug.onrender.com", // домейнът трябва да е в Allowlist
         icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
       }
     });
@@ -96,18 +94,17 @@ setInterval(() => {
   for (const [id, row] of pendings) if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
 }, 30_000);
 
-// ── помощник: нормализиран approval → Promise<session> ────────────────────────
-function toApprovalPromise(approvalMaybeFnOrPromise) {
+// ── помощник: нормализирай approval → Promise<session> ────────────────────────
+function toApprovalPromise(maybeFnOrPromise) {
   try {
-    if (typeof approvalMaybeFnOrPromise === "function") {
-      const ret = approvalMaybeFnOrPromise();           // някои билдове връщат функция
+    if (typeof maybeFnOrPromise === "function") {
+      const ret = maybeFnOrPromise();
       return (ret && typeof ret.then === "function") ? ret : Promise.resolve(ret);
     }
-    if (approvalMaybeFnOrPromise && typeof approvalMaybeFnOrPromise.then === "function") {
-      return approvalMaybeFnOrPromise;                  // директен Promise
+    if (maybeFnOrPromise && typeof maybeFnOrPromise.then === "function") {
+      return maybeFnOrPromise;
     }
-    // fallback: ако нищо не е върнато, връщаме обещание, което никога не изпълнява
-    return new Promise(() => {});
+    return new Promise(() => {}); // never resolves
   } catch (e) {
     return Promise.reject(e);
   }
@@ -117,14 +114,15 @@ function toApprovalPromise(approvalMaybeFnOrPromise) {
 app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
+
+    // Минимално изискан chain (ETH mainnet). Останалите като optional.
     const requiredNamespaces = {
       eip155: {
         methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
-        chains: ["eip155:1"], // минимално изискване → Ethereum Mainnet
+        chains: ["eip155:1"],
         events: ["chainChanged","accountsChanged"]
       }
     };
-    // по желание: дай шанс на уолета да добави още вериги
     const optionalNamespaces = {
       eip155: {
         chains: ["eip155:137","eip155:25","eip155:338"],
@@ -132,26 +130,25 @@ app.get("/wc-uri", async (_req, res) => {
         events: ["chainChanged","accountsChanged"]
       }
     };
-    const { uri, approval } = await client.connect({
-      requiredNamespaces,
-      optionalNamespaces
-    });
 
-    const { uri, approval } = await client.connect({ requiredNamespaces });
+    // !!! НЕ ПОВТАРЯМЕ ИМЕНАТА: wcUri и approvalRaw
+    const connectRes = await client.connect({ requiredNamespaces, optionalNamespaces });
+    const wcUri = connectRes.uri;
+    const approvalRaw = connectRes.approval;
 
     const id = uuidv4();
     const createdAt = Date.now();
     const row = { createdAt, approval: null, session: null };
     pendings.set(id, row);
 
-    // нормализирай approval
-    const approvalPromise = toApprovalPromise(approval);
+    const approvalPromise = toApprovalPromise(approvalRaw);
     row.approval = approvalPromise;
 
     approvalPromise.then((session) => {
       const ns = session?.namespaces?.eip155;
       const first = ns?.accounts?.[0] || "";
       const [_, chainIdStr, address] = first.split(":");
+      console.log("[WC APPROVED]", session.topic, ns?.accounts);
       row.session = {
         topic: session.topic,
         addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
@@ -162,7 +159,7 @@ app.get("/wc-uri", async (_req, res) => {
     }).catch(() => { /* отказ в уолета */ });
 
     const expiresAt = new Date(createdAt + PENDING_TTL_MS).toISOString();
-    res.json({ id, uri, expiresAt });
+    res.json({ id, uri: wcUri, expiresAt });
   } catch (e) {
     console.error("[WC CONNECT ERROR]", e?.message || e);
     res.status(500).json({ error: e?.message || String(e) });
