@@ -1,228 +1,157 @@
+// server.js (ESM)
 import express from "express";
 import cors from "cors";
+import QRCode from "qrcode";
 import UniversalProvider from "@walletconnect/universal-provider";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Настройки
 const PORT = process.env.PORT || 10000;
-const PROJECT_ID = process.env.WC_PROJECT_ID; // поставете вашия Project ID от WalletConnect Cloud
+const WC_PROJECT_ID = process.env.WC_PROJECT_ID; // задължително!
+const APP_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
-if (!PROJECT_ID) {
-  console.error("Missing WC_PROJECT_ID env var.");
-  process.exit(1);
+if (!WC_PROJECT_ID) {
+  console.error("[BOOT] Missing WC_PROJECT_ID env var!");
 }
 
-/**
- * Поддържаме един provider в процеса + текущата сесия/топик
- */
-let provider = null;
-let session = null;       // последната одобрена сесия
-let lastUri = null;       // последният генериран wc: URI
+// Памет за активни сесии/провайдъри по topic
+const sessions = new Map(); // topic -> { provider, accounts[], chainId, address }
 
-// Човешки имена за веригите
-const CHAIN_NAME = {
-  1: "Ethereum Mainnet",
-  56: "BNB Chain",
-  97: "BNB Testnet",
-  137: "Polygon",
-  59144: "Linea",
+// Хелпъри
+const parseAccount = (accStr) => {
+  // формат: "eip155:137:0xabc..."
+  const [, chainPart, address] = accStr.split(":");
+  const chainId = Number(chainPart);
+  return { chainId, address };
 };
 
-// позволени вериги (можете да разширявате)
-const EIP155_CHAINS = [1, 56, 97, 137, 59144];
+const chainLabel = (id) => {
+  switch (id) {
+    case 1: return "Ethereum Mainnet";
+    case 56: return "BNB Chain";
+    case 97: return "BNB Testnet";
+    case 137: return "Polygon";
+    case 59144: return "Linea";
+    default: return `eip155:${id}`;
+  }
+};
 
-/**
- * Инициализация (еднократно)
- */
-async function getProvider() {
-  if (provider) return provider;
+// =========================
+//   REST ЕНДПОИНТИ
+// =========================
 
-  provider = await UniversalProvider.init({
-    projectId: PROJECT_ID,
-    metadata: {
-      name: "3DHome4U Login",
-      description: "Login via WalletConnect / MetaMask",
-      url: "https://3dhome4u.com",
-      icons: ["https://walletconnect.com/walletconnect-logo.png"],
-    },
-  });
-
-  // Събития
-  provider.on("display_uri", (uri) => {
-    lastUri = uri; // QR за сканиране
-  });
-
-  provider.on("session_delete", () => {
-    session = null;
-  });
-
-  provider.on("session_ping", () => {/* noop */});
-  provider.on("session_event", () => {/* noop */});
-
-  return provider;
-}
-
-/**
- * Генериране на QR (wc: uri) за логване.
- * Може да поискате специфична верига чрез query ?chainId=137 и т.н.,
- * но по-долу оставяме „опционални“ вериги – потребителят избира в портфейла.
- */
-app.get("/wc-uri", async (_req, res) => {
+// 1) Генерирай WalletConnect URI + topic
+app.get("/wc-uri", async (req, res) => {
   try {
-    const p = await getProvider();
-
-    // зануляваме старото, за да вдигнем ново събитие display_uri
-    lastUri = null;
-    session = null;
-
-    // Искаме достъп до eip155 за изброените вериги
-    const chains = EIP155_CHAINS.map((id) => `eip155:${id}`);
-
-    // ВАЖНО: UniversalProvider работи с namespaces (optionalNamespaces е достатъчно).
-    // Методи, които ви трябват: четене, подпис, изпращане и СМЯНА на мрежа.
-    const optionalNamespaces = {
-      eip155: {
-        methods: [
-          "eth_chainId",
-          "eth_sendTransaction",
-          "eth_sign",
-          "eth_signTypedData",
-          "personal_sign",
-          "wallet_switchEthereumChain",
-        ],
-        chains,
-        events: ["chainChanged", "accountsChanged"],
-      },
-    };
-
-    // Взимаме URI чрез събитието 'display_uri'.
-    // След това чакаме одобрение (approval()) да върне сесията.
-    const waitForUri = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("No wc:uri")), 15000);
-      const check = () => {
-        if (lastUri) {
-          clearTimeout(timeout);
-          resolve(lastUri);
-        } else {
-          setTimeout(check, 50);
-        }
-      };
-      check();
+    // Създаваме Universal Provider
+    const provider = await UniversalProvider.init({
+      projectId: WC_PROJECT_ID,
+      metadata: {
+        name: "WC Login Demo",
+        description: "Demo login",
+        url: APP_URL,
+        icons: ["https://walletconnect.com/walletconnect-logo.png"]
+      }
     });
 
-    const approvalPromise = p.connect({ optionalNamespaces });
-    const uri = await waitForUri; // QR за фронтенда
+    // Ще върнем URI през този промис (идва от събитието)
+    const uriPromise = new Promise((resolve) => {
+      provider.on("display_uri", (uri) => resolve(uri));
+    });
 
-    // Паралелно чакаме приемането
-    approvalPromise.then((_session) => {
-      session = _session;
-    }).catch(() => {/* игнорираме тук; фронтът ще пита /status */});
+    // Изискваме сесия (declare namespaces)
+    // Тук позволяваме всички вериги, които искаш да поддържаш
+    const methods = [
+      "eth_sendTransaction",
+      "eth_sign",
+      "personal_sign",
+      "eth_signTypedData",
+      "wallet_switchEthereumChain"
+    ];
+    const events = ["accountsChanged", "chainChanged"];
 
-    res.json({ ok: true, uri });
+    await provider.connect({
+      namespaces: {
+        eip155: {
+          methods,
+          events,
+          chains: [
+            "eip155:1",    // Ethereum
+            "eip155:56",   // BNB Chain
+            "eip155:97",   // BNB Testnet (ако я ползваш)
+            "eip155:137",  // Polygon
+            "eip155:59144" // Linea (пример)
+          ]
+        }
+      }
+    });
+
+    // Изчакваме URI-то от display_uri
+    const uri = await uriPromise;
+
+    // След одобрение от потребителя ще получим session
+    provider.on("session_update", (event) => {
+      // при update – обновяваме паметта
+      const sess = provider.session;
+      if (!sess) return;
+      const topic = sess.topic;
+      const accounts = sess.namespaces.eip155?.accounts ?? [];
+      const { chainId, address } = accounts.length ? parseAccount(accounts[0]) : { chainId: null, address: null };
+      sessions.set(topic, { provider, accounts, chainId, address });
+    });
+
+    provider.on("session_delete", () => {
+      // почисти от паметта
+      const topic = provider.session?.topic;
+      if (topic) sessions.delete(topic);
+    });
+
+    provider.on("display_uri", () => {
+      // игнорираме следващи display_uri евенти
+    });
+
+    // Върни и бърз QR (по избор)
+    const qrPng = await QRCode.toDataURL(uri);
+    res.json({ ok: true, uri, qrPng });
+
   } catch (err) {
     console.error("[/wc-uri] ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
+    res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
-/**
- * Статус – връща адрес (съкратен) и човешко име на мрежата.
- */
-app.get("/status", async (_req, res) => {
+// 2) Статус по topic – адрес и мрежа (след като user е одобрил в MetaMask)
+app.get("/status", async (req, res) => {
   try {
-    if (!session) {
-      return res.json({ ok: true, status: "not_found" });
+    // обхождаме всички провайдъри и гледаме дали вече имат session
+    // (UniversalProvider няма „topic“ докато не се установи сесията;
+    //  затова тук просто взимаме последната активна)
+    let result = null;
+
+    for (const [topic, data] of sessions.entries()) {
+      const { chainId, address } = data;
+      if (address && chainId) {
+        result = { topic, address, chainId, network: chainLabel(chainId) };
+        break;
+      }
     }
 
-    // В eip155.accounts стойностите са "eip155:{CHAIN_ID}:{ADDRESS}"
-    const accs = session.namespaces?.eip155?.accounts || [];
-    const first = accs[0]; // вземаме първия
-    if (!first) return res.json({ ok: true, status: "not_found" });
+    if (!result) return res.json({ ok: true, connected: false });
 
-    const [, chainIdStr, address] = first.split(":"); // ["eip155","137","0x..."]
-    const chainId = Number(chainIdStr);
-    const networkName = CHAIN_NAME[chainId] || `Chain ${chainId}`;
-
-    const short = address
-      ? `${address.slice(0, 6)}...${address.slice(-4)}`
-      : "";
-
-    res.json({
-      ok: true,
-      status: "connected",
-      topic: session.topic,
-      address,
-      addressShort: short,
-      chainId,
-      networkName,
-    });
+    res.json({ ok: true, connected: true, ...result });
   } catch (err) {
     console.error("[/status] ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
+    res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
-/**
- * Смяна на мрежа от бутоните (пример: { "chainId": 137 }).
- * За MetaMask: params.chainId трябва да е hex (0x89 за Polygon, 0x38 за BNB и т.н.).
- */
-app.post("/switch-chain", async (req, res) => {
-  try {
-    const p = await getProvider();
-    if (!session) return res.status(400).json({ ok: false, error: "No active session" });
-
-    const target = Number(req.body?.chainId);
-    if (!EIP155_CHAINS.includes(target)) {
-      return res.status(400).json({ ok: false, error: "Unsupported chain" });
-    }
-
-    // hex без leading zeros
-    const hex = "0x" + target.toString(16);
-
-    // заявката се препраща през WalletConnect към портфейла
-    await p.request({
-      topic: session.topic,
-      chainId: `eip155:${target}`,
-      request: {
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: hex }],
-      },
-    });
-
-    // Обновяваме статуса
-    const accs = session.namespaces?.eip155?.accounts || [];
-    const first = accs[0] || "";
-    const [, , address] = first.split(":");
-    res.json({
-      ok: true,
-      address,
-      chainId: target,
-      networkName: CHAIN_NAME[target] || `Chain ${target}`,
-    });
-  } catch (err) {
-    console.error("[/switch-chain] ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-/**
- * Отписване (по избор)
- */
-app.post("/disconnect", async (_req, res) => {
-  try {
-    if (provider && session) {
-      await provider.disconnect();
-    }
-    session = null;
-    lastUri = null;
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
+// 3) Статичните файлове (ако имаш /public/index.html)
+app.use(express.static("public"));
 
 app.listen(PORT, () => {
   console.log(`Listening on :${PORT}`);
+  console.log(`==> Available at your primary URL ${APP_URL}`);
 });
