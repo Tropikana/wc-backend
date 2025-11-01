@@ -57,6 +57,28 @@ async function getSignClient() {
       icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
     }
   });
+
+  // слушаме промяна на сесията – някои портфейли пращат update при смяна на мрежата
+  signClient.on("session_update", ({ topic, params }) => {
+    try {
+      const ns = params?.namespaces?.eip155;
+      if (!ns) return;
+      for (const [, row] of pendings) {
+        if (row.session?.topic === topic) {
+          const picked = pickActive(ns);
+          row.session = {
+            ...row.session,
+            addresses: (ns.accounts || []).map(a => parseAccount(a).address),
+            chains: ns.chains || [],
+            address: picked.address || null,
+            chainId: picked.chainId,
+            networkName: chainIdToName(picked.chainId)
+          };
+        }
+      }
+    } catch {}
+  });
+
   return signClient;
 }
 
@@ -95,12 +117,6 @@ function parseAccount(ac) {
   const [ns, cid, addr] = String(ac || "").split(":");
   return { ns, chainId: Number(cid || 0), address: addr || "" };
 }
-
-/**
- * ВЗЕМИ АКТИВНАТА ВЕРИГА
- * Wallet-ът връща accounts[0] за активната верига (MetaMask Mobile).
- * Ако липсва – падни към първата декларирана верига, после към първия адрес.
- */
 function pickActive(ns) {
   const accounts = Array.isArray(ns?.accounts) ? ns.accounts.map(parseAccount) : [];
   if (accounts.length > 0 && accounts[0].chainId && accounts[0].address) {
@@ -110,7 +126,6 @@ function pickActive(ns) {
       allAddresses: accounts.map(a => a.address)
     };
   }
-  // fallback: първата верига от chains
   const firstChain = Array.isArray(ns?.chains) && ns.chains.length
     ? Number(String(ns.chains[0]).split(":")[1] || 0)
     : 0;
@@ -121,18 +136,20 @@ function pickActive(ns) {
     allAddresses: accounts.map(a => a.address)
   };
 }
+function decToHexChainId(n) {
+  return "0x" + Number(n).toString(16);
+}
 
 // ── API: генерира WC URI ──────────────────────────────────────────────────────
 app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    // Минимален namespace → стабилно на MetaMask (Polygon, BNB, ETH)
     const requiredNamespaces = {
       eip155: {
-        methods: ["personal_sign"],
+        methods: ["personal_sign"], // минимално; switch ще извикаме отделно
         chains: ["eip155:137", "eip155:56", "eip155:1"],
-        events: [] // без events, за да не гърми валидаторът при някои портфейли
+        events: []
       }
     };
 
@@ -148,7 +165,7 @@ app.get("/wc-uri", async (_req, res) => {
 
     approvalPromise.then((session) => {
       const ns = session?.namespaces?.eip155;
-      const picked = pickActive(ns); // ← ТУК е промяната
+      const picked = pickActive(ns);
       row.session = {
         topic: session.topic,
         addresses: picked.allAddresses,
@@ -177,14 +194,14 @@ app.get("/wc-status", async (req, res) => {
     if (expired) { pendings.delete(id); return res.json({ status: "expired" }); }
     return res.json({ status: "pending" });
   }
-  // fallback след рестарт – върни първа активна сесия, ако има
+  // fallback: ако бекът е рестартирал – вземи първата активна сесия
   try {
     const client = await getSignClient();
     const all = client?.session?.getAll ? client.session.getAll() : [];
     if (Array.isArray(all) && all.length > 0) {
       const s = all[0];
       const ns = s.namespaces?.eip155;
-      const picked = pickActive(ns); // ← същата логика
+      const picked = pickActive(ns);
       return res.json({
         status: "approved",
         topic: s.topic,
@@ -199,6 +216,32 @@ app.get("/wc-status", async (req, res) => {
   return res.json({ status: "not_found" });
 });
 
+// ── API: смяна на мрежа (по желание от UI) ─────────────────────────────────────
+app.post("/wc-switch", async (req, res) => {
+  try {
+    const { topic, chainRef } = req.body; // chainRef = "eip155:137"
+    if (!topic || !chainRef) return res.status(400).json({ error: "topic and chainRef are required" });
+
+    const client = await getSignClient();
+    const decId = Number(String(chainRef).split(":")[1] || 0);
+    const hexId = decToHexChainId(decId);
+
+    await client.request({
+      topic,
+      chainId: chainRef,
+      request: {
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: hexId }]
+      }
+    });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.warn("[WC SWITCH ERROR]", e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
 // ── статични файлове ───────────────────────────────────────────────────────────
 app.use(express.static("public"));
 
@@ -210,7 +253,6 @@ const server = app.listen(PORT, () => {
 
 process.on("unhandledRejection", (e) => {
   const msg = (e && e.message) ? e.message : String(e || "");
-  // Шум от SDK при някои портфейли; функционално всичко работи
   if (msg.includes("Cannot convert undefined or null to object")) return;
   console.warn("[UNHANDLED REJECTION]", msg);
 });
