@@ -1,146 +1,132 @@
 <!doctype html>
 <html lang="bg">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Влизане с WalletConnect / MetaMask</title>
   <style>
-    :root {
-      --bg: #0f1216;
-      --panel: #161b22;
-      --text: #e6edf3;
-      --muted: #9aa7b2;
-      --accent: #2f81f7;
-      --chip: #0b2942;
-      --ok: #22c55e;
-      --bad: #ef4444;
-    }
-    html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,Segoe UI,Roboto,Arial}
-    .wrap{max-width:980px;margin:40px auto;padding:0 16px}
-    h1{font-size:28px;margin:0 0 16px}
-    .card{background:var(--panel);border-radius:14px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
-    .row{display:flex;gap:28px;align-items:flex-start}
-    .left{flex:0 0 360px}
-    .qr{width:100%;aspect-ratio:1;border-radius:12px;background:#0a0d10;display:grid;place-items:center;overflow:hidden}
-    .qr img{width:100%;height:100%;object-fit:contain}
-    .right{flex:1}
-    .k{color:var(--muted);min-width:72px}
-    .line{display:flex;gap:12px;align-items:center;margin:10px 0}
-    .chip{background:var(--chip);color:var(--text);padding:6px 10px;border-radius:999px;font-size:13px}
-    .btn{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
-    .pill{background:#12263a;border-radius:999px;padding:4px 8px;margin-left:8px;font-size:12px;cursor:pointer}
-    .muted{color:var(--muted)}
-    .ok{color:var(--ok)} .bad{color:var(--bad)}
+    :root { --bg:#0e1217; --panel:#151a21; --txt:#e8eef8; --muted:#9fb0c5; --accent:#2f7cff; --ok:#27c18d; }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,Segoe UI,Roboto,Inter}
+    .wrap{max-width:1040px;margin:40px auto;padding:0 16px}
+    .card{background:var(--panel);border-radius:16px;padding:20px 24px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+    h1{font-size:28px;margin:0 0 8px} .muted{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:360px 1fr;gap:24px}
+    .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:#10151c;border:1px solid #263041;color:#cfe0ff;font-size:13px;margin-right:8px;margin-top:8px}
+    .btn{display:inline-block;padding:10px 14px;border-radius:10px;background:var(--accent);color:#fff;border:0;cursor:pointer}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .btn-ghost{background:#1a2230}
+    .status{color:var(--ok);font-weight:600}
+    #qr{width:340px;height:340px;background:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center}
+    .row{margin:10px 0}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>Влизане с WalletConnect / MetaMask</h1>
-  <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
+  <div class="wrap">
+    <h1>Влизане с WalletConnect / MetaMask</h1>
+    <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
 
-  <div class="card">
-    <div class="row">
-      <div class="left">
+    <div class="card grid">
+      <div>
         <button id="btnGen" class="btn">Генерирай QR</button>
-        <div style="height:12px"></div>
-        <div class="qr"><img id="qr" alt=""></div>
+        <div id="qr" class="row"><span class="muted">QR ще се появи тук</span></div>
       </div>
 
-      <div class="right">
-        <div class="line"><span class="k">Статус:</span><span id="st" class="muted">Генерирам…</span></div>
-        <div class="line"><span class="k">Адрес:</span><span id="addr" class="chip">—</span></div>
-        <div class="line"><span class="k">Мрежа:</span><span id="chain" class="chip">—</span></div>
+      <div>
+        <div class="row">Статус: <span id="st" class="status">Генерирам…</span></div>
+        <div class="row">Адрес: <span id="addr">—</span></div>
+        <div class="row">Мрежа: <span id="net">—</span></div>
 
-        <div style="height:6px"></div>
-        <div class="line">
-          <span class="chip">Ethereum Mainnet</span><span class="pill" onclick="switchTo(1)">Switch</span>
-          <span class="chip">Linea</span><span class="pill" onclick="switchTo(59144)">Switch</span>
-          <span class="chip">BNB Chain</span><span class="pill" onclick="switchTo(56)">Switch</span>
-        </div>
-        <div class="line">
-          <span class="chip">BNB Testnet</span><span class="pill" onclick="switchTo(97)">Switch</span>
-          <span class="chip">Polygon</span><span class="pill" onclick="switchTo(137)">Switch</span>
+        <div class="row">
+          <span class="badge">Ethereum Mainnet</span><button data-chain="1" class="badge btn-ghost">Switch</button>
+          <span class="badge">Linea</span><button data-chain="59144" class="badge btn-ghost">Switch</button>
+          <span class="badge">BNB Chain</span><button data-chain="56" class="badge btn-ghost">Switch</button>
+          <span class="badge">BNB Testnet</span><button data-chain="97" class="badge btn-ghost">Switch</button>
+          <span class="badge">Polygon</span><button data-chain="137" class="badge btn-ghost">Switch</button>
         </div>
 
-        <div style="height:10px"></div>
-        <button class="btn" onclick="copyAddr()">Копирай адрес</button>
-
-        <div style="height:16px"></div>
-        <div class="muted">Topic: <span id="topic">—</span></div>
+        <div class="row"><button id="copy" class="btn">Копирай адрес</button></div>
+        <div class="row muted">Topic: <code id="topic">—</code></div>
       </div>
     </div>
   </div>
-</div>
 
-<script>
-const $ = (id) => document.getElementById(id);
+  <script>
+    const qrel = document.getElementById('qr');
+    const st = document.getElementById('st');
+    const addr = document.getElementById('addr');
+    const net = document.getElementById('net');
+    const topicEl = document.getElementById('topic');
+    const copyBtn = document.getElementById('copy');
+    const genBtn = document.getElementById('btnGen');
 
-let POLL = null;
+    function mask(a){ return a ? a.slice(0,6)+'…'+a.slice(-4) : '—'; }
 
-async function genQR() {
-  $('st').textContent = 'Генерирам…';
-  $('addr').textContent = '—';
-  $('chain').textContent = '—';
-  $('topic').textContent = '—';
-  $('qr').src = '';
-  try {
-    const r = await fetch('/wc-uri');
-    const j = await r.json();
-    if (j.error) throw new Error(j.error);
-    $('qr').src = j.png;
-    $('st').textContent = 'Изчакай одобрение в портфейла…';
+    async function genQR(){
+      try{
+        st.textContent = 'Генерирам…';
+        addr.textContent = '—';
+        net.textContent = '—';
+        topicEl.textContent = '—';
 
-    // старт на polling, за да вземем адрес/мрежа след одобрение
-    if (POLL) clearInterval(POLL);
-    POLL = setInterval(updateStatus, 1500);
-  } catch (e) {
-    alert('Неуспешно /wc-uri\n' + e.message);
-    $('st').textContent = 'Грешка';
-  }
-}
+        const r = await fetch('/wc-uri');
+        const j = await r.json();
+        if(!j.ok || !j.uri){ alert('Неуспешно /wc-uri'); return; }
 
-async function updateStatus() {
-  try {
-    const r = await fetch('/wc-status');
-    const j = await r.json();
-    if (!j.connected) return;
+        // QR
+        const api = 'https://api.qrserver.com/v1/create-qr-code/?size=340x340&data=' + encodeURIComponent(j.uri);
+        qrel.innerHTML = `<img src="${api}" width="340" height="340" alt="qr">`;
 
-    $('st').textContent = 'Свързано';
-    $('addr').textContent = j.address ? j.address.slice(0,6)+'…'+j.address.slice(-4) : '—';
-    $('chain').textContent = j.chainName || ('Chain '+j.chainId);
-    $('topic').textContent = j.topic || '—';
+        st.textContent = 'Изчакай потвърждение в MetaMask…';
+      }catch(e){
+        alert('Неуспешно /wc-uri');
+      }
+    }
 
-    if (POLL) { clearInterval(POLL); POLL = null; }
-  } catch (_) {}
-}
+    // периодично питаме за сесията
+    async function poll(){
+      try{
+        const r = await fetch('/session');
+        const j = await r.json();
+        if(!j.connected){
+          st.textContent = 'Чакам свързване…';
+          return;
+        }
+        st.textContent = 'Свързано';
+        addr.textContent = mask(j.address);
+        net.textContent = j.chainName || j.chainId;
+        topicEl.textContent = j.topic || '—';
+      }catch{}
+    }
+    setInterval(poll, 1200);
 
-async function switchTo(chainId) {
-  try {
-    const r = await fetch('/switch-chain', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ targetChainId: chainId })
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || 'Switch failed');
-    $('chain').textContent = j.chainName || ('Chain '+j.chainId);
-    $('st').textContent = 'Свързано';
-  } catch (e) {
-    alert('Switch error: ' + e.message);
-  }
-}
+    // switch бутони
+    for(const b of document.querySelectorAll('button[data-chain]')){
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        try{
+          const id = Number(b.dataset.chain);
+          const r = await fetch('/switch', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ targetChainId:id })
+          });
+          const j = await r.json();
+          if(!j.ok) alert('Switch error: ' + (j.error||''));
+          else net.textContent = j.chainName || j.chainId;
+        }finally{
+          b.disabled = false;
+        }
+      });
+    }
 
-async function copyAddr() {
-  const lbl = $('addr').textContent;
-  if (!lbl || lbl === '—') return;
-  try {
-    await navigator.clipboard.writeText(lbl);
-    $('st').textContent = 'Адресът е копиран';
-    setTimeout(()=> $('st').textContent='Свързано', 1000);
-  } catch(_) {}
-}
+    copyBtn.onclick = async () => {
+      const text = addr.textContent.replace('…',''); // показваме маскирано; реалното идва в /session
+      const r = await fetch('/session'); const j = await r.json();
+      if(j.connected && j.address) navigator.clipboard.writeText(j.address);
+    };
 
-$('btnGen').onclick = genQR;
-</script>
+    genBtn.onclick = genQR;
+  </script>
 </body>
 </html>
