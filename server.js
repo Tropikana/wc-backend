@@ -259,4 +259,27 @@ app.post("/rpc-balance", async (req, res) => {
     const payload = { id: Date.now(), jsonrpc: "2.0", method: "eth_getBalance", params: [address, "latest"] };
 
     const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-    const j = awai
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || "RPC error");
+    const wei = BigInt(j.result);
+    const ether = Number(wei) / 1e18;
+    res.json({ balanceWei: j.result, balanceEther: ether.toString() });
+  } catch (e) {
+    console.warn("[RPC BALANCE ERROR]", e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// ------- static / index.html -------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+
+const server = app.listen(PORT, () => {
+  console.log(`Listening on :${PORT}`);
+  console.log(`[BOOT] WC_PROJECT_ID length=${WC_PROJECT_ID.length}`);
+});
+process.on("SIGINT", () => server.close(() => process.exit(0)));
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
