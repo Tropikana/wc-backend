@@ -48,6 +48,7 @@ async function loadSignClient() {
 
   if (!Candidate) throw new Error("WalletConnect SignClient export not recognized");
 
+  // Единна фабрика – връща инстанция независимо дали е static init или constructor
   SignClientFactory = async (opts) => {
     if (typeof Candidate.init === "function") return Candidate.init(opts);
     const instance = new Candidate(opts);
@@ -99,7 +100,15 @@ function toApprovalPromise(maybeFnOrPromise) {
   }
 }
 function chainIdToName(id) {
-  const map = { 1: "Ethereum Mainnet", 137: "Polygon", 56: "BNB Chain", 42161: "Arbitrum One", 43114: "Avalanche", 25: "Cronos", 338: "Cronos Testnet" };
+  const map = {
+    1: "Ethereum Mainnet",
+    56: "BNB Chain",
+    137: "Polygon",
+    25: "Cronos",
+    338: "Cronos Testnet",
+    42161: "Arbitrum One",
+    43114: "Avalanche C-Chain"
+  };
   return map[id] || `eip155:${id}`;
 }
 
@@ -108,11 +117,11 @@ app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    // МИНИМАЛНА заявка → няма да гърми валидатора
+    // МИНИМАЛНО, но вече с три вериги (Polygon, BNB, ETH)
     const requiredNamespaces = {
       eip155: {
-        methods: ["personal_sign"],   // само най-поддържания метод
-        chains: ["eip155:1"],         // само ETH mainnet
+        methods: ["personal_sign"],                 // максимално широко поддържан
+        chains: ["eip155:137", "eip155:56", "eip155:1"], // Polygon, BNB, Ethereum
         events: ["accountsChanged","chainChanged"]
       }
     };
@@ -132,18 +141,29 @@ app.get("/wc-uri", async (_req, res) => {
     approvalPromise.then((session) => {
       try {
         const ns = session?.namespaces?.eip155;
-        const first = ns?.accounts?.[0] || "";
-        const [_, chainIdStr, address] = first.split(":");
-        const chainId = Number(chainIdStr || 0);
-        console.log("[WC APPROVED]", session.topic, ns?.accounts);
+        const list = Array.isArray(ns?.accounts) ? ns.accounts : [];
+
+        // парсни всички записи eip155:<chainId>:<address>
+        const parsed = list.map(a => {
+          const parts = a.split(":");
+          return { chainId: Number(parts[1] || 0), address: parts[2] || "" };
+        });
+
+        // предпочитан ред: Polygon → BNB → Ethereum → първия наличен
+        const preferredOrder = [137, 56, 1];
+        const picked =
+          parsed.find(p => preferredOrder.includes(p.chainId)) ||
+          parsed[0] || { chainId: 0, address: "" };
+
         row.session = {
           topic: session.topic,
-          addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
+          addresses: parsed.map(p => p.address),
           chains: ns?.chains || [],
-          address: address || null,
-          chainId,
-          networkName: chainIdToName(chainId)
+          address: picked.address || null,
+          chainId: picked.chainId,
+          networkName: chainIdToName(picked.chainId)
         };
+        console.log("[WC APPROVED]", session.topic, parsed);
       } catch (e) {
         console.warn("[WC APPROVED PARSE ERROR]", e?.message || e);
       }
@@ -171,24 +191,31 @@ app.get("/wc-status", async (req, res) => {
     return res.json({ status: "pending" });
   }
 
-  // fallback за след рестарт: върни първата активна сесия от клиента
+  // fallback след рестарт: върни първата активна сесия
   try {
     const client = await getSignClient();
     const all = client?.session?.getAll ? client.session.getAll() : [];
     if (Array.isArray(all) && all.length > 0) {
       const s = all[0];
       const ns = s.namespaces?.eip155;
-      const first = ns?.accounts?.[0] || "";
-      const [__, chainIdStr, address] = first.split(":");
-      const chainId = Number(chainIdStr || 0);
+      const list = Array.isArray(ns?.accounts) ? ns.accounts : [];
+      const parsed = list.map(a => {
+        const parts = a.split(":");
+        return { chainId: Number(parts[1] || 0), address: parts[2] || "" };
+      });
+      const preferredOrder = [137, 56, 1];
+      const picked =
+        parsed.find(p => preferredOrder.includes(p.chainId)) ||
+        parsed[0] || { chainId: 0, address: "" };
+
       return res.json({
         status: "approved",
         topic: s.topic,
-        addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
+        addresses: parsed.map(p => p.address),
         chains: ns?.chains || [],
-        address: address || null,
-        chainId,
-        networkName: chainIdToName(chainId)
+        address: picked.address || null,
+        chainId: picked.chainId,
+        networkName: chainIdToName(picked.chainId)
       });
     }
   } catch (_) { /* ignore */ }
