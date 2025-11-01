@@ -19,7 +19,7 @@ if (!WC_PROJECT_ID) {
 // ── app ────────────────────────────────────────────────────────────────────────
 const app = express();
 
-// CORS allowlist (ползвай точно твоите домейни)
+// CORS allowlist
 const ALLOWLIST = new Set([
   "https://wc-backend-tpug.onrender.com",
   "https://www.3dhome4u.com",
@@ -27,14 +27,13 @@ const ALLOWLIST = new Set([
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // позволи curl / локални инструменти
+      if (!origin) return cb(null, true);
       if (ALLOWLIST.has(origin)) return cb(null, true);
       return cb(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
 );
-
 app.use(express.json());
 
 // ── robust import на @walletconnect/sign-client ────────────────────────────────
@@ -91,7 +90,6 @@ async function getSignClient() {
     },
   });
 
-  // слушаме промяна на сесията – напр. смяна на мрежа
   signClient.on("session_update", ({ topic, params }) => {
     try {
       const ns = params?.namespaces?.eip155;
@@ -132,7 +130,7 @@ function toApprovalPromise(x) {
       return r && r.then ? r : Promise.resolve(r);
     }
     if (x && x.then) return x;
-    return new Promise(() => {}); // never resolves
+    return new Promise(() => {});
   } catch (e) {
     return Promise.reject(e);
   }
@@ -186,7 +184,7 @@ app.get("/wc-uri", async (_req, res) => {
 
     const requiredNamespaces = {
       eip155: {
-        methods: ["personal_sign", "eth_accounts", "eth_chainId"], // минимално
+        methods: ["personal_sign", "eth_accounts", "eth_chainId"],
         chains: ["eip155:137", "eip155:56", "eip155:1"],
         events: [],
       },
@@ -245,7 +243,6 @@ app.get("/wc-status", async (req, res) => {
     }
     return res.json({ status: "pending" });
   }
-  // fallback: при рестарт – вземи първата активна сесия от клиента
   try {
     const client = await getSignClient();
     const all = client?.session?.getAll ? client.session.getAll() : [];
@@ -267,10 +264,10 @@ app.get("/wc-status", async (req, res) => {
   return res.json({ status: "not_found" });
 });
 
-// ── API: смяна на мрежа (по желание от UI) ─────────────────────────────────────
+// ── API: смяна на мрежа ───────────────────────────────────────────────────────
 app.post("/wc-switch", async (req, res) => {
   try {
-    const { topic, chainRef } = req.body; // chainRef = "eip155:137"
+    const { topic, chainRef } = req.body;
     if (!topic || !chainRef)
       return res.status(400).json({ error: "topic and chainRef are required" });
 
@@ -294,21 +291,27 @@ app.post("/wc-switch", async (req, res) => {
   }
 });
 
-// ── healthcheck (за Render) ───────────────────────────────────────────────────
+// ── healthcheck ────────────────────────────────────────────────────────────────
 app.get("/healthz", (_req, res) => res.send("ok"));
 
-// ── статични файлове + index.html ─────────────────────────────────────────────
+// ── статични файлове + root към public/index.html ─────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// сервирай папката public (CSS/JS/изображения и самото index.html при директен достъп)
+app.use(express.static(path.join(__dirname, "public")));
+
+// root → public/index.html (поправка на ENOENT)
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// ако имаш /public, може да го сервираш също
-app.use(express.static("public"));
+// SPA fallback (ако отвориш непознат път – пак да връща index.html)
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
-// ── старт + guard хендлъри ────────────────────────────────────────────────────
+// ── старт ─────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`Listening on :${PORT}`);
   console.log(
