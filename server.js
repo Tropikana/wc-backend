@@ -1,30 +1,35 @@
-// server.js (ESM)
+// server.js
 import express from "express";
 import cors from "cors";
 import QRCode from "qrcode";
-import UniversalProvider from "@walletconnect/universal-provider";
+import UniversalProviderModule from "@walletconnect/universal-provider";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Настройки
 const PORT = process.env.PORT || 10000;
-const WC_PROJECT_ID = process.env.WC_PROJECT_ID; // задължително!
+const WC_PROJECT_ID = process.env.WC_PROJECT_ID || ""; // сложи си го в Render
 const APP_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
-if (!WC_PROJECT_ID) {
-  console.error("[BOOT] Missing WC_PROJECT_ID env var!");
+// --- най-важно: нормализираме импорта ---
+// някъде идва като default, някъде – директно
+const UniversalProvider =
+  typeof UniversalProviderModule.init === "function"
+    ? UniversalProviderModule
+    : UniversalProviderModule.default;
+
+if (!UniversalProvider) {
+  console.error("[BOOT] Cannot load @walletconnect/universal-provider");
 }
 
-// Памет за активни сесии/провайдъри по topic
-const sessions = new Map(); // topic -> { provider, accounts[], chainId, address }
+const sessions = new Map(); // topic -> { provider, accounts, chainId, address }
 
-// Хелпъри
 const parseAccount = (accStr) => {
-  // формат: "eip155:137:0xabc..."
-  const [, chainPart, address] = accStr.split(":");
-  const chainId = Number(chainPart);
+  const parts = accStr.split(":");
+  // eip155:137:0x123...
+  const chainId = Number(parts[1]);
+  const address = parts[2];
   return { chainId, address };
 };
 
@@ -39,14 +44,19 @@ const chainLabel = (id) => {
   }
 };
 
-// =========================
-//   REST ЕНДПОИНТИ
-// =========================
-
-// 1) Генерирай WalletConnect URI + topic
+// ========================
+//  /wc-uri
+// ========================
 app.get("/wc-uri", async (req, res) => {
   try {
-    // Създаваме Universal Provider
+    if (!WC_PROJECT_ID) {
+      return res.status(500).json({ ok: false, error: "Missing WC_PROJECT_ID" });
+    }
+    if (!UniversalProvider || typeof UniversalProvider.init !== "function") {
+      return res.status(500).json({ ok: false, error: "UniversalProvider.init not available" });
+    }
+
+    // 1. init
     const provider = await UniversalProvider.init({
       projectId: WC_PROJECT_ID,
       metadata: {
@@ -57,13 +67,14 @@ app.get("/wc-uri", async (req, res) => {
       }
     });
 
-    // Ще върнем URI през този промис (идва от събитието)
+    // 2. чакаме display_uri
     const uriPromise = new Promise((resolve) => {
-      provider.on("display_uri", (uri) => resolve(uri));
+      provider.on("display_uri", (uri) => {
+        resolve(uri);
+      });
     });
 
-    // Изискваме сесия (declare namespaces)
-    // Тук позволяваме всички вериги, които искаш да поддържаш
+    // 3. connect с всички мрежи, които искаме
     const methods = [
       "eth_sendTransaction",
       "eth_sign",
@@ -79,76 +90,64 @@ app.get("/wc-uri", async (req, res) => {
           methods,
           events,
           chains: [
-            "eip155:1",    // Ethereum
-            "eip155:56",   // BNB Chain
-            "eip155:97",   // BNB Testnet (ако я ползваш)
-            "eip155:137",  // Polygon
-            "eip155:59144" // Linea (пример)
+            "eip155:1",
+            "eip155:56",
+            "eip155:97",
+            "eip155:137",
+            "eip155:59144"
           ]
         }
       }
     });
 
-    // Изчакваме URI-то от display_uri
     const uri = await uriPromise;
+    const qrPng = await QRCode.toDataURL(uri);
 
-    // След одобрение от потребителя ще получим session
-    provider.on("session_update", (event) => {
-      // при update – обновяваме паметта
+    // 4. след като потребителят одобри, provider.session ще е наличен
+    provider.on("session_update", () => {
       const sess = provider.session;
       if (!sess) return;
       const topic = sess.topic;
       const accounts = sess.namespaces.eip155?.accounts ?? [];
-      const { chainId, address } = accounts.length ? parseAccount(accounts[0]) : { chainId: null, address: null };
+      const { chainId, address } =
+        accounts.length ? parseAccount(accounts[0]) : { chainId: null, address: null };
       sessions.set(topic, { provider, accounts, chainId, address });
     });
 
     provider.on("session_delete", () => {
-      // почисти от паметта
       const topic = provider.session?.topic;
       if (topic) sessions.delete(topic);
     });
 
-    provider.on("display_uri", () => {
-      // игнорираме следващи display_uri евенти
-    });
-
-    // Върни и бърз QR (по избор)
-    const qrPng = await QRCode.toDataURL(uri);
     res.json({ ok: true, uri, qrPng });
-
   } catch (err) {
     console.error("[/wc-uri] ERROR:", err);
     res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
-// 2) Статус по topic – адрес и мрежа (след като user е одобрил в MetaMask)
-app.get("/status", async (req, res) => {
-  try {
-    // обхождаме всички провайдъри и гледаме дали вече имат session
-    // (UniversalProvider няма „topic“ докато не се установи сесията;
-    //  затова тук просто взимаме последната активна)
-    let result = null;
-
-    for (const [topic, data] of sessions.entries()) {
-      const { chainId, address } = data;
-      if (address && chainId) {
-        result = { topic, address, chainId, network: chainLabel(chainId) };
-        break;
-      }
+// ========================
+//  /status
+// ========================
+app.get("/status", (req, res) => {
+  // най-простият вариант – връщаме първата активна сесия
+  for (const [topic, data] of sessions.entries()) {
+    const { chainId, address } = data;
+    if (address && chainId) {
+      return res.json({
+        ok: true,
+        connected: true,
+        topic,
+        address,
+        chainId,
+        network: chainLabel(chainId)
+      });
     }
-
-    if (!result) return res.json({ ok: true, connected: false });
-
-    res.json({ ok: true, connected: true, ...result });
-  } catch (err) {
-    console.error("[/status] ERROR:", err);
-    res.status(500).json({ ok: false, error: String(err) });
   }
+  return res.json({ ok: true, connected: false });
 });
 
-// 3) Статичните файлове (ако имаш /public/index.html)
+// статично (ако имаш public/)
 app.use(express.static("public"));
 
 app.listen(PORT, () => {
