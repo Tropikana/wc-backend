@@ -18,6 +18,10 @@
     #qr img{width:260px;height:260px;border-radius:12px;display:block}
     code{background:#0f1318;border:1px solid #1c2128;color:#d7e3ff;padding:.2rem .4rem;border-radius:6px}
     .error{color:#ff8787}
+    .ok{color:#aef39c}
+    .stat{color:#ffd38b}
+    .cols{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+    .pill{background:#0f1318;border:1px solid #1c2128;border-radius:12px;padding:6px 10px;display:inline-block}
   </style>
 </head>
 <body>
@@ -27,7 +31,7 @@
     <div class="card">
       <div class="row"><button id="btn">Генерирай QR</button></div>
       <div id="qr" class="row"></div>
-      <div id="status" class="row"></div>
+      <div id="status" class="row stat"></div>
       <div id="result" class="row"></div>
     </div>
   </div>
@@ -36,8 +40,12 @@
     const btn=document.getElementById("btn"),qrDiv=document.getElementById("qr"),statusEl=document.getElementById("status"),resultEl=document.getElementById("result");
     const base=""; let poll=null; const stop=()=>{ if(poll){clearInterval(poll); poll=null;} };
 
+    async function copy(text){
+      try{ await navigator.clipboard.writeText(text); alert("Адресът е копиран."); }catch{ /*ignore*/ }
+    }
+
     btn.addEventListener("click", async ()=>{
-      stop(); qrDiv.innerHTML=""; statusEl.textContent="Създаване на сесия..."; statusEl.className=""; resultEl.textContent="";
+      stop(); qrDiv.innerHTML=""; statusEl.textContent="Създаване на сесия..."; statusEl.className="stat"; resultEl.textContent="";
       try{
         const r=await fetch(base+"/wc-uri");
         if(!r.ok){ const t=await r.text().catch(()=> ""); statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`; if(t) resultEl.innerHTML=`<code>${t.slice(0,400)}</code>`; return; }
@@ -50,11 +58,34 @@
 
         poll=setInterval(async ()=>{
           const s=await fetch(base+`/wc-status?id=${encodeURIComponent(id)}`).then(x=>x.json());
-          if(s.status==="approved"){ stop(); statusEl.innerHTML=`Статус: <b>approved</b>`;
-            resultEl.innerHTML=`<div>Topic: <code>${s.topic}</code></div><div>Address: <code>${s.address}</code></div><div>All: <code>${(s.addresses||[]).join(", ")}</code></div><div>ChainId: <code>${s.chainId}</code></div>`; }
-          else if(s.status==="expired"){ stop(); statusEl.innerHTML=`Статус: <b>expired</b> — генерирай нов QR.`; }
-          else if(s.status==="not_found"){ stop(); statusEl.innerHTML=`<span class="error">Статус: not_found</span>`; }
-          else { statusEl.innerHTML=`Статус: <b>pending</b> — одобри в MetaMask`; }
+          if(s.status==="approved"){
+            stop();
+            statusEl.innerHTML=`<span class="ok">Свързано</span>`;
+            const short = (a)=> a ? a.slice(0,6)+"…"+a.slice(-4) : "";
+            resultEl.innerHTML = `
+              <div class="cols">
+                <div>Адрес:</div>
+                <div class="pill">${short(s.address || "")}</div>
+              </div>
+              <div class="cols">
+                <div>Мрежа:</div>
+                <div class="pill">${s.networkName || ("eip155:"+s.chainId)}</div>
+              </div>
+              <div style="margin-top:8px">
+                <button id="cp">Копирай адрес</button>
+              </div>
+              <div style="margin-top:8px">
+                <small>Topic: <code>${s.topic}</code></small>
+              </div>
+            `;
+            document.getElementById("cp").onclick=()=>copy(s.address||"");
+          } else if (s.status==="expired"){
+            stop(); statusEl.innerHTML=`<span class="error">Статус: expired</span> — генерирай нов QR.`;
+          } else if (s.status==="not_found"){
+            statusEl.innerHTML=`<span class="error">Статус: not_found</span>`;
+          } else {
+            statusEl.innerHTML=`Статус: <b>pending</b> — одобри в MetaMask`;
+          }
         }, 2000);
       }catch(e){
         statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`;
