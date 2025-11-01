@@ -6,7 +6,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@walletconnect/sign-client": "2.14.1",
+    "@walletconnect/sign-client": "^2.11.2",
     "cors": "2.8.5",
     "express": "4.19.2",
     "qrcode": "1.5.3"
