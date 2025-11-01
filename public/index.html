@@ -41,7 +41,7 @@
     const base=""; let poll=null; const stop=()=>{ if(poll){clearInterval(poll); poll=null;} };
 
     async function copy(text){
-      try{ await navigator.clipboard.writeText(text); alert("Адресът е копиран."); }catch{ /*ignore*/ }
+      try{ await navigator.clipboard.writeText(text); alert("Адресът е копиран."); }catch{}
     }
 
     btn.addEventListener("click", async ()=>{
@@ -63,20 +63,10 @@
             statusEl.innerHTML=`<span class="ok">Свързано</span>`;
             const short = (a)=> a ? a.slice(0,6)+"…"+a.slice(-4) : "";
             resultEl.innerHTML = `
-              <div class="cols">
-                <div>Адрес:</div>
-                <div class="pill">${short(s.address || "")}</div>
-              </div>
-              <div class="cols">
-                <div>Мрежа:</div>
-                <div class="pill">${s.networkName || ("eip155:"+s.chainId)}</div>
-              </div>
-              <div style="margin-top:8px">
-                <button id="cp">Копирай адрес</button>
-              </div>
-              <div style="margin-top:8px">
-                <small>Topic: <code>${s.topic}</code></small>
-              </div>
+              <div class="cols"><div>Адрес:</div><div class="pill">${short(s.address || "")}</div></div>
+              <div class="cols"><div>Мрежа:</div><div class="pill">${s.networkName || ("eip155:"+s.chainId)}</div></div>
+              <div style="margin-top:8px"><button id="cp">Копирай адрес</button></div>
+              <div style="margin-top:8px"><small>Topic: <code>${s.topic}</code></small></div>
             `;
             document.getElementById("cp").onclick=()=>copy(s.address||"");
           } else if (s.status==="expired"){
