@@ -1,129 +1,117 @@
-// server.js
 import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import UniversalProvider from "@walletconnect/universal-provider";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
-// ====== CONFIG ======
-const PORT = process.env.PORT || 10000;
-const WC_PROJECT_ID = process.env.WC_PROJECT_ID || ""; // <-- сложи си го в Render
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || "*")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
-
-// ====== MIDDLEWARE ======
-app.use(cors({
-  origin: CORS_ORIGINS.length ? CORS_ORIGINS : "*"
-}));
+app.use(cors());
 app.use(express.json());
+
+// статичен фронтенд
 app.use(express.static(path.join(__dirname, "public")));
 
-// ====== WALLETCONNECT SINGLETON ======
-let provider = null;
-let coreInitWarningShown = false;
+const PORT = process.env.PORT || 10000;
+const WC_PROJECT_ID = process.env.WC_PROJECT_ID;
 
-// „mutex“ за да няма паралелни /wc-uri
-let generating = false;
+// позволени мрежи (eip155:<chainId>)
+const CHAINS = [
+  "eip155:1",     // Ethereum
+  "eip155:56",    // BNB Chain
+  "eip155:97",    // BNB Testnet
+  "eip155:137",   // Polygon
+  "eip155:59144", // Linea
+];
 
-// Създаваме/връщаме единствен provider
+// guard срещу паралелно генериране
+let isGenerating = false;
+
 async function getProvider() {
-  if (provider) return provider;
+  // ВАЖНО: default import
+  const UniversalProvider = (await import("@walletconnect/universal-provider")).default;
 
-  if (!WC_PROJECT_ID) {
-    throw new Error("Missing WC_PROJECT_ID env var");
-  }
-
-  provider = await UniversalProvider.init({
+  const provider = await UniversalProvider.init({
     projectId: WC_PROJECT_ID,
     metadata: {
       name: "WC Login Demo",
-      description: "Login with WalletConnect / MetaMask",
-      url: "https://example.org",
-      icons: ["https://avatars.githubusercontent.com/u/37784886?s=200&v=4"]
-    }
+      description: "Login via WalletConnect",
+      url: process.env.PUBLIC_URL || "https://wc-backend-tpug.onrender.com",
+      icons: ["https://avatars.githubusercontent.com/u/37784886?s=200&v=4"],
+    },
   });
-
-  // Диагностика – показваме предупреждението само веднъж
-  if (!coreInitWarningShown) {
-    try {
-      // @walletconnect/core показва предупреждение ако се извика повече от веднъж;
-      // Ние сме в единствения init – просто логваме, че е готов.
-      console.log("[WC] UniversalProvider initialized");
-    } finally {
-      coreInitWarningShown = true;
-    }
-  }
 
   return provider;
 }
 
-// Затваряме стари pairings (ако има), за да не „висят“
-async function cleanupOldPairings(client) {
-  try {
-    const pairings = client?.core?.pairing?.pairings || [];
-    for (const p of pairings) {
-      if (!p.active) {
-        await client.core.pairing.delete({ topic: p.topic, reason: { code: 7000, message: "cleanup" } });
-      }
-    }
-  } catch (e) {
-    console.warn("[WC] cleanupOldPairings warn:", e.message);
-  }
-}
-
-// ====== ROUTES ======
-
-// Здраве
-app.get("/health", (_, res) => res.json({ ok: true }));
-
-// Генерира pairing URI (едновременно само 1)
 app.get("/wc-uri", async (req, res) => {
-  if (generating) {
-    return res.status(429).json({ ok: false, error: "busy" });
+  if (!WC_PROJECT_ID) {
+    return res.json({ ok: false, error: "missing_project_id" });
   }
-  generating = true;
+  if (isGenerating) {
+    return res.json({ ok: false, error: "busy" });
+  }
 
-  // safety unlock след 15 секунди
-  const unlock = setTimeout(() => { generating = false; }, 15000);
+  isGenerating = true;
 
   try {
-    const p = await getProvider();
-    const client = p.client;
+    const provider = await getProvider();
 
-    // чистим стари
-    await cleanupOldPairings(client);
+    // Ще изчакаме display_uri (URI за QR)
+    const uri = await new Promise(async (resolve, reject) => {
+      let timer = setTimeout(() => reject(new Error("timeout")), 12000);
 
-    // Създаваме нов pairing (URI + topic)
-    const { uri, topic } = await client.core.pairing.create({});
-    if (!uri || !topic) {
-      throw new Error("pairing.create() returned empty uri/topic");
-    }
+      const onceDisplay = (u) => {
+        clearTimeout(timer);
+        resolve(u);
+      };
 
-    // Връщаме на фронтенда за QR
+      provider.once("display_uri", onceDisplay);
+
+      try {
+        await provider.connect({
+          namespaces: {
+            eip155: {
+              methods: [
+                "eth_requestAccounts",
+                "eth_accounts",
+                "eth_chainId",
+                "personal_sign",
+                "eth_sign",
+                "eth_signTypedData",
+                "eth_sendTransaction",
+              ],
+              chains: CHAINS,
+              events: ["accountsChanged", "chainChanged"],
+            },
+          },
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
+    const topic = provider?.session?.topic || null;
+
     return res.json({ ok: true, uri, topic });
-  } catch (err) {
-    console.error("[/wc-uri] ERROR:", err);
-    return res.status(500).json({ ok: false, error: err.message || "server_error" });
+  } catch (e) {
+    console.error("[/wc-uri] ERROR:", e);
+    return res.json({ ok: false, error: e?.message || "init_failed" });
   } finally {
-    clearTimeout(unlock);
-    generating = false;
+    isGenerating = false;
   }
 });
 
-// Опционално: показвай index.html
-app.get("/", (_, res) => {
+// index fallback (по избор; ако искаш SPA)
+app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// ====== START ======
 app.listen(PORT, () => {
-  console.log(`Listening on :${PORT}`);
-  console.log(`==> Available at your primary URL https://wc-backend-tpug.onrender.com`);
+  console.log("Listening on :", PORT);
+  console.log("==> Available at your primary URL",
+    process.env.PUBLIC_URL || "http://localhost:" + PORT
+  );
 });
