@@ -1,55 +1,39 @@
 import express from "express";
 import cors from "cors";
-import { v4 as uuidv4 } from "uuid";
-import { createRequire } from "module";
+import path from "path";
+import { fileURLToPath } from "url";
+import QRCode from "qrcode";
+import SignClient from "@walletconnect/sign-client";
 
-const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// ── конфигурация ───────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
-const WC_PROJECT_ID = (process.env.WC_PROJECT_ID || "").trim();
-const RELAY_URL = process.env.RELAY_URL || "wss://relay.walletconnect.com";
-if (!WC_PROJECT_ID) { console.error("[FATAL] Missing WC_PROJECT_ID"); process.exit(1); }
-
-// ── app ────────────────────────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
-// ── robust import на @walletconnect/sign-client ────────────────────────────────
-let SignClientFactory = null;
-async function loadSignClient() {
-  if (SignClientFactory) return SignClientFactory;
-  let mod = null, mode = "esm";
-  try { mod = await import("@walletconnect/sign-client"); }
-  catch { mode = "cjs"; mod = require("@walletconnect/sign-client"); }
-  console.log("[WC IMPORT] mode=", mode, "keys=", Object.keys(mod || {}));
+const PORT = process.env.PORT || 10000;
+const WC_PROJECT_ID = process.env.WC_PROJECT_ID || "2b73902ef2084063237c17f37e9b1e9e"; // <-- твоя Project ID
 
-  const Candidate =
-    mod?.default?.init ? mod.default :
-    mod?.SignClient?.init ? mod.SignClient :
-    (typeof mod?.default === "function" ? mod.default :
-     typeof mod?.SignClient === "function" ? mod.SignClient : null);
+// Поддържани мрежи (eip155)
+const CHAINS = {
+  1:  { key: "eip155:1",    name: "Ethereum Mainnet",  hex: "0x1"  },
+  56: { key: "eip155:56",   name: "BNB Chain",         hex: "0x38" },
+  97: { key: "eip155:97",   name: "BNB Testnet",       hex: "0x61" },
+  137:{ key: "eip155:137",  name: "Polygon",           hex: "0x89" },
+  59144:{key: "eip155:59144",name: "Linea",            hex: "0xe738" }
+};
 
-  if (!Candidate) throw new Error("WalletConnect SignClient export not recognized");
+// Държим client инстанция в процеса
+let signClient;
 
-  SignClientFactory = async (opts) => {
-    if (typeof Candidate.init === "function") return Candidate.init(opts);
-    const instance = new Candidate(opts);
-    if (!instance || typeof instance.connect !== "function")
-      throw new Error("Constructed SignClient has no .connect()");
-    return instance;
-  };
-  return SignClientFactory;
-}
-
-let signClient = null;
-async function getSignClient() {
+/** lazy init на SignClient */
+async function getClient() {
   if (signClient) return signClient;
-  const create = await loadSignClient();
-  signClient = await create({
+  signClient = await SignClient.init({
     projectId: WC_PROJECT_ID,
-    relayUrl: RELAY_URL,
+    relayUrl: "wss://relay.walletconnect.com",
     metadata: {
       name: "3DHome4U Login",
       description: "Login via WalletConnect / MetaMask",
@@ -58,208 +42,167 @@ async function getSignClient() {
     }
   });
 
-  // слушаме промяна на сесията – някои портфейли пращат update при смяна на мрежата
+  // полезни логове
   signClient.on("session_update", ({ topic, params }) => {
-    try {
-      const ns = params?.namespaces?.eip155;
-      if (!ns) return;
-      for (const [, row] of pendings) {
-        if (row.session?.topic === topic) {
-          const picked = pickActive(ns);
-          row.session = {
-            ...row.session,
-            addresses: (ns.accounts || []).map(a => parseAccount(a).address),
-            chains: ns.chains || [],
-            address: picked.address || null,
-            chainId: picked.chainId,
-            networkName: chainIdToName(picked.chainId)
-          };
-        }
-      }
-    } catch {}
+    const { namespaces } = params;
+    console.log("[WC UPDATE]", topic, summarizeNamespaces(namespaces));
   });
+  signClient.on("session_event", (e) => console.log("[WC EVENT]", e));
+  signClient.on("session_delete", (e) => console.log("[WC DELETE]", e));
 
   return signClient;
 }
 
-// ── store + TTL ────────────────────────────────────────────────────────────────
-const PENDING_TTL_MS = 10 * 60 * 1000;
-const pendings = new Map();
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, row] of pendings)
-    if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
-}, 60_000);
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-function toApprovalPromise(x) {
+/** удобен логер */
+function summarizeNamespaces(namespaces) {
   try {
-    if (typeof x === "function") { const r = x(); return r && r.then ? r : Promise.resolve(r); }
-    if (x && x.then) return x;
-    return new Promise(() => {}); // never resolves
-  } catch (e) { return Promise.reject(e); }
-}
-function chainIdToName(id) {
-  const map = {
-    1: "Ethereum Mainnet",
-    56: "BNB Chain",
-    97: "BNB Testnet",
-    137: "Polygon",
-    59144: "Linea",
-    25: "Cronos",
-    338: "Cronos Testnet",
-    42161: "Arbitrum One",
-    43114: "Avalanche C-Chain"
-  };
-  return map[id] || `eip155:${id}`;
-}
-function parseAccount(ac) {
-  const [ns, cid, addr] = String(ac || "").split(":");
-  return { ns, chainId: Number(cid || 0), address: addr || "" };
-}
-function pickActive(ns) {
-  const accounts = Array.isArray(ns?.accounts) ? ns.accounts.map(parseAccount) : [];
-  if (accounts.length > 0 && accounts[0].chainId && accounts[0].address) {
-    return {
-      chainId: accounts[0].chainId,
-      address: accounts[0].address,
-      allAddresses: accounts.map(a => a.address)
-    };
+    const e = namespaces.eip155;
+    const chains = e?.chains || [];
+    const accounts = e?.accounts || [];
+    return { chains, accounts };
+  } catch {
+    return {};
   }
-  const firstChain = Array.isArray(ns?.chains) && ns.chains.length
-    ? Number(String(ns.chains[0]).split(":")[1] || 0)
-    : 0;
-  const firstAddr = accounts[0]?.address || "";
-  return {
-    chainId: firstChain || accounts[0]?.chainId || 0,
-    address: firstAddr,
-    allAddresses: accounts.map(a => a.address)
-  };
-}
-function decToHexChainId(n) {
-  return "0x" + Number(n).toString(16);
 }
 
-// ── API: генерира WC URI ──────────────────────────────────────────────────────
-app.get("/wc-uri", async (_req, res) => {
+/** API: вземи wc uri + proposal topic */
+app.get("/wc-uri", async (req, res) => {
   try {
-    const client = await getSignClient();
+    const client = await getClient();
 
-    const requiredNamespaces = {
-      eip155: {
-        methods: ["personal_sign"], // минимално; switch ще извикаме отделно
-        chains: ["eip155:137", "eip155:56", "eip155:1"],
-        events: []
-      }
-    };
+    // Набор от мрежи, които *искаме* да поддържаме
+    const optChains = Object.values(CHAINS).map(c => c.key);
 
-    const { uri, approval } = await client.connect({ requiredNamespaces });
-
-    const id = uuidv4();
-    const createdAt = Date.now();
-    const row = { createdAt, approval: null, session: null };
-    pendings.set(id, row);
-
-    const approvalPromise = toApprovalPromise(approval);
-    row.approval = approvalPromise;
-
-    approvalPromise.then((session) => {
-      const ns = session?.namespaces?.eip155;
-      const picked = pickActive(ns);
-      row.session = {
-        topic: session.topic,
-        addresses: picked.allAddresses,
-        chains: ns?.chains || [],
-        address: picked.address || null,
-        chainId: picked.chainId,
-        networkName: chainIdToName(picked.chainId)
-      };
-      console.log("[WC APPROVED]", session.topic, "chains=", ns?.chains, "picked=", picked);
-    }).catch(e => console.warn("[WC APPROVAL REJECTED]", e?.message || e));
-
-    res.json({ id, uri, expiresAt: new Date(createdAt + PENDING_TTL_MS).toISOString() });
-  } catch (e) {
-    console.error("[WC CONNECT ERROR]", e?.message || e);
-    res.status(500).json({ error: e?.message || String(e) });
-  }
-});
-
-// ── API: статус ────────────────────────────────────────────────────────────────
-app.get("/wc-status", async (req, res) => {
-  const { id } = req.query;
-  if (id && pendings.has(id)) {
-    const row = pendings.get(id);
-    const expired = Date.now() - row.createdAt > PENDING_TTL_MS;
-    if (row.session) return res.json({ status: "approved", ...row.session });
-    if (expired) { pendings.delete(id); return res.json({ status: "expired" }); }
-    return res.json({ status: "pending" });
-  }
-  // fallback: ако бекът е рестартирал – вземи първата активна сесия
-  try {
-    const client = await getSignClient();
-    const all = client?.session?.getAll ? client.session.getAll() : [];
-    if (Array.isArray(all) && all.length > 0) {
-      const s = all[0];
-      const ns = s.namespaces?.eip155;
-      const picked = pickActive(ns);
-      return res.json({
-        status: "approved",
-        topic: s.topic,
-        addresses: picked.allAddresses,
-        chains: ns?.chains || [],
-        address: picked.address || null,
-        chainId: picked.chainId,
-        networkName: chainIdToName(picked.chainId)
-      });
-    }
-  } catch {}
-  return res.json({ status: "not_found" });
-});
-
-// ── API: смяна на мрежа (по желание от UI) ─────────────────────────────────────
-app.post("/wc-switch", async (req, res) => {
-  try {
-    const { topic, chainRef } = req.body; // chainRef = "eip155:137"
-    if (!topic || !chainRef) return res.status(400).json({ error: "topic and chainRef are required" });
-
-    const client = await getSignClient();
-    const decId = Number(String(chainRef).split(":")[1] || 0);
-    const hexId = decToHexChainId(decId);
-
-    await client.request({
-      topic,
-      chainId: chainRef,
-      request: {
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: hexId }]
+    // Важното: v2 – използваме optionalNamespaces, requiredNamespaces вече е deprec.
+    const { uri, approval } = await client.connect({
+      optionalNamespaces: {
+        eip155: {
+          chains: optChains,
+          methods: [
+            "eth_sendTransaction",
+            "personal_sign",
+            "eth_signTypedData",
+            "wallet_switchEthereumChain",
+            "wallet_addEthereumChain",
+            "eth_sign"
+          ],
+          events: ["accountsChanged", "chainChanged"]
+        }
       }
     });
 
-    res.json({ ok: true });
+    if (!uri) {
+      return res.status(500).json({ error: "No WC URI" });
+    }
+
+    // Ще държим promiseId в паметта на този процес (Render държи инстанцията жива)
+    const promiseId = Math.random().toString(36).slice(2);
+
+    // Записваме promise на одобрение в map, достъпен по promiseId
+    approvals.set(promiseId, approval);
+
+    const png = await QRCode.toDataURL(uri);
+    res.json({ uri, id: promiseId, qr: png });
   } catch (e) {
-    console.warn("[WC SWITCH ERROR]", e?.message || e);
-    res.status(500).json({ error: e?.message || String(e) });
+    console.error("[WC CONNECT ERROR]", e?.message);
+    res.status(500).json({ error: e?.message || "wc error" });
   }
 });
 
-// ── статични файлове ───────────────────────────────────────────────────────────
-app.use(express.static("public"));
+// map на чакащи approvals
+const approvals = new Map();
 
-// ── старт + guard хендлъри ────────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
+/** API: чакаме/взимаме резултата от одобрението */
+app.get("/wc-approve/:id", async (req, res) => {
+  const id = req.params.id;
+  const approval = approvals.get(id);
+  if (!approval) return res.status(404).json({ error: "not_found" });
+
+  try {
+    const session = await approval(); // <- чакаме потребителя да одобри в портфейла
+    approvals.delete(id);
+    // Връщаме summary за фронта
+    res.json(serializeSession(session));
+  } catch (e) {
+    approvals.delete(id);
+    console.error("[UNHANDLED REJECTION]", e?.message);
+    res.status(500).json({ error: e?.message || "approval failed" });
+  }
+});
+
+/** API: изпрати wallet_switchEthereumChain към портфейла */
+app.post("/wc-switch", async (req, res) => {
+  try {
+    const { topic, targetChainIdHex, selectedAccount } = req.body;
+    const client = await getClient();
+
+    // примерен fallback: ако не е подаден account – вземи първия от последната сесия по topic
+    const session = client.session.get(topic);
+    const account = selectedAccount || (session?.namespaces?.eip155?.accounts?.[0] ?? "");
+
+    const [ns, chainIdStr] = account.split(":"); // "eip155:56:0xabc" -> ["eip155","56","0xabc"]
+    if (!topic || !session) throw new Error("unknown session/topic");
+
+    // подаваме chainId като hex (напр. 0x38)
+    const request = {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: targetChainIdHex }]
+    };
+
+    await client.request({
+      topic,
+      chainId: `${ns}:${parseInt(targetChainIdHex, 16)}`, // напр. "eip155:56"
+      request
+    });
+
+    // след успешен switch – прочети актуалния chain от wallet-а
+    const newChain = await client.request({
+      topic,
+      chainId: `${ns}:${parseInt(targetChainIdHex, 16)}`,
+      request: { method: "eth_chainId", params: [] }
+    });
+
+    res.json({ ok: true, chainIdHex: newChain });
+  } catch (e) {
+    console.error("[SWITCH ERR]", e?.message);
+    res.status(500).json({ error: e?.message || "switch failed" });
+  }
+});
+
+/** helper – сериализация за фронта */
+function serializeSession(session) {
+  // реален адрес и мрежа вземаме от accounts:
+  // формат: "eip155:137:0x1234..."
+  const acc = session?.namespaces?.eip155?.accounts?.[0] || "";
+  const parts = acc.split(":"); // ["eip155","137","0x...."]
+  const chainIdNum = Number(parts[1] || 1);
+  const address = parts[2] || "";
+
+  const chainInfo = CHAINS[chainIdNum] || CHAINS[1];
+
+  const all = session?.namespaces?.eip155?.accounts || [];
+  const allAddresses = all.map(a => a.split(":")[2]);
+
+  console.log(
+    "[WC APPROVED]",
+    session.topic,
+    "chains=",
+    session.namespaces?.eip155?.chains,
+    "picked=",
+    { chainId: chainIdNum, address, allAddresses }
+  );
+
+  return {
+    topic: session.topic,
+    chainId: chainIdNum,
+    chainName: chainInfo.name,
+    chainHex: chainInfo.hex,
+    address,
+    allAddresses
+  };
+}
+
+app.listen(PORT, () => {
   console.log(`Listening on :${PORT}`);
-  console.log(`[BOOT] WC_PROJECT_ID length=${WC_PROJECT_ID.length}, preview=${WC_PROJECT_ID.slice(0,3)}...${WC_PROJECT_ID.slice(-3)}`);
+  console.log("==> Your service is live");
 });
-
-process.on("unhandledRejection", (e) => {
-  const msg = (e && e.message) ? e.message : String(e || "");
-  if (msg.includes("Cannot convert undefined or null to object")) return;
-  console.warn("[UNHANDLED REJECTION]", msg);
-});
-process.on("uncaughtException",  (e) => {
-  const msg = (e && e.message) ? e.message : String(e || "");
-  if (msg.includes("Cannot convert undefined or null to object")) return;
-  console.warn("[UNCAUGHT EXCEPTION]", msg);
-});
-process.on("SIGINT",  () => server.close(() => process.exit(0)));
-process.on("SIGTERM", () => server.close(() => process.exit(0)));
