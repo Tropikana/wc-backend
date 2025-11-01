@@ -38,7 +38,7 @@
         <label for="chainSel" class="muted">Мрежа за логин:</label>
         <select id="chainSel">
           <option value="eip155:1">Ethereum Mainnet</option>
-          <option value="eip155:56">BNB Chain</option>
+          <option value="eip155:56" selected>BNB Chain</option>
           <option value="eip155:97">BNB Testnet</option>
           <option value="eip155:137">Polygon</option>
           <option value="eip155:59144">Linea</option>
@@ -125,7 +125,9 @@ function renderStatus(data){
     topicEl.textContent = data.topic || "—";
     lastTopic = data.topic || null;
     lastAddress = addr || null;
-    lastChainRef = (data.chains && data.chains[0]) || chainSel.value;
+
+    // !!! важен момент: използваме selectedChainRef от сървъра
+    lastChainRef = data.selectedChainRef || chainSel.value;
     balBtn.disabled = !(lastAddress && lastChainRef);
 
     chainsEl.innerHTML = "";
@@ -168,7 +170,7 @@ genBtn.onclick = async ()=>{
   genBtn.disabled = true;
   try{
     stEl.textContent = "Генерирам…"; stEl.className = "muted";
-    const chain = chainSel.value; // избраната мрежа
+    const chain = chainSel.value;
     const r = await fetch(API + "/wc-uri?chain="+encodeURIComponent(chain));
     const data = await r.json();
     if (!data.uri){ stEl.textContent="Грешка при /wc-uri"; stEl.className="err"; return; }
