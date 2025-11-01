@@ -120,10 +120,22 @@ app.get("/wc-uri", async (_req, res) => {
     const requiredNamespaces = {
       eip155: {
         methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
-        chains: ["eip155:1","eip155:137","eip155:25","eip155:338"],
+        chains: ["eip155:1"], // минимално изискване → Ethereum Mainnet
         events: ["chainChanged","accountsChanged"]
       }
     };
+    // по желание: дай шанс на уолета да добави още вериги
+    const optionalNamespaces = {
+      eip155: {
+        chains: ["eip155:137","eip155:25","eip155:338"],
+        methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
+        events: ["chainChanged","accountsChanged"]
+      }
+    };
+    const { uri, approval } = await client.connect({
+      requiredNamespaces,
+      optionalNamespaces
+    });
 
     const { uri, approval } = await client.connect({ requiredNamespaces });
 
