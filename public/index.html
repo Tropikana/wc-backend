@@ -1,132 +1,138 @@
 <!doctype html>
 <html lang="bg">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
   <title>Влизане с WalletConnect / MetaMask</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0e1217; --panel:#151a21; --txt:#e8eef8; --muted:#9fb0c5; --accent:#2f7cff; --ok:#27c18d; }
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,Segoe UI,Roboto,Inter}
-    .wrap{max-width:1040px;margin:40px auto;padding:0 16px}
-    .card{background:var(--panel);border-radius:16px;padding:20px 24px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
-    h1{font-size:28px;margin:0 0 8px} .muted{color:var(--muted)}
-    .grid{display:grid;grid-template-columns:360px 1fr;gap:24px}
-    .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:#10151c;border:1px solid #263041;color:#cfe0ff;font-size:13px;margin-right:8px;margin-top:8px}
-    .btn{display:inline-block;padding:10px 14px;border-radius:10px;background:var(--accent);color:#fff;border:0;cursor:pointer}
+    body{background:#0f1318;color:#e6edf3;font-family:system-ui,Inter,Segoe UI,Roboto,Arial;margin:0;padding:24px}
+    .card{background:#151a21;border-radius:14px;padding:24px;max-width:960px;margin:0 auto;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    h1{margin-top:0}
+    .btn{background:#2d6cdf;border:0;border-radius:10px;color:#fff;padding:10px 14px;cursor:pointer}
     .btn:disabled{opacity:.6;cursor:not-allowed}
-    .btn-ghost{background:#1a2230}
-    .status{color:var(--ok);font-weight:600}
-    #qr{width:340px;height:340px;background:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center}
-    .row{margin:10px 0}
-    code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .chip{display:inline-block;background:#111827;border:1px solid #263042;border-radius:999px;padding:6px 10px;margin:4px 6px 0 0;font-size:14px}
+    .chip .mini{margin-left:8px;background:#1f2937;border:0;border-radius:999px;color:#c7d2fe;padding:4px 8px;cursor:pointer}
+    #qr{width:420px;height:420px;background:#0b0e13;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#657182}
+    .row{display:flex;gap:28px;flex-wrap:wrap}
+    .muted{color:#9aa4b2}
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
-  <div class="wrap">
+  <div class="card">
     <h1>Влизане с WalletConnect / MetaMask</h1>
-    <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
+    <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконата горе вдясно).</p>
 
-    <div class="card grid">
+    <div class="row">
       <div>
-        <button id="btnGen" class="btn">Генерирай QR</button>
-        <div id="qr" class="row"><span class="muted">QR ще се появи тук</span></div>
+        <button id="btn" class="btn">Генерирай QR</button>
+        <div id="qr" style="margin-top:12px">QR ще се появи тук</div>
       </div>
 
-      <div>
-        <div class="row">Статус: <span id="st" class="status">Генерирам…</span></div>
-        <div class="row">Адрес: <span id="addr">—</span></div>
-        <div class="row">Мрежа: <span id="net">—</span></div>
+      <div style="min-width:320px;flex:1">
+        <div class="muted">Статус: <span id="status">Генерирам…</span></div>
+        <div style="margin-top:10px">Адрес: <span id="addr" class="chip">—</span></div>
+        <div style="margin-top:10px">Мрежа: <span id="chain" class="chip">—</span></div>
 
-        <div class="row">
-          <span class="badge">Ethereum Mainnet</span><button data-chain="1" class="badge btn-ghost">Switch</button>
-          <span class="badge">Linea</span><button data-chain="59144" class="badge btn-ghost">Switch</button>
-          <span class="badge">BNB Chain</span><button data-chain="56" class="badge btn-ghost">Switch</button>
-          <span class="badge">BNB Testnet</span><button data-chain="97" class="badge btn-ghost">Switch</button>
-          <span class="badge">Polygon</span><button data-chain="137" class="badge btn-ghost">Switch</button>
+        <div style="margin-top:14px">
+          <span class="chip">Ethereum Mainnet <button class="mini" data-chain="1">Switch</button></span>
+          <span class="chip">Linea <button class="mini" data-chain="59144">Switch</button></span>
+          <span class="chip">BNB Chain <button class="mini" data-chain="56">Switch</button></span>
+          <span class="chip">BNB Testnet <button class="mini" data-chain="97">Switch</button></span>
+          <span class="chip">Polygon <button class="mini" data-chain="137">Switch</button></span>
         </div>
 
-        <div class="row"><button id="copy" class="btn">Копирай адрес</button></div>
-        <div class="row muted">Topic: <code id="topic">—</code></div>
+        <div style="margin-top:16px">
+          <button id="copy" class="btn" disabled>Копирай адрес</button>
+        </div>
+
+        <div class="muted" style="margin-top:14px">Topic: <span id="topic">—</span></div>
       </div>
     </div>
   </div>
 
-  <script>
-    const qrel = document.getElementById('qr');
-    const st = document.getElementById('st');
-    const addr = document.getElementById('addr');
-    const net = document.getElementById('net');
-    const topicEl = document.getElementById('topic');
-    const copyBtn = document.getElementById('copy');
-    const genBtn = document.getElementById('btnGen');
+<script>
+const btn = document.getElementById("btn");
+const statusEl = document.getElementById("status");
+const qrEl = document.getElementById("qr");
+const addrEl = document.getElementById("addr");
+const chainEl = document.getElementById("chain");
+const topicEl = document.getElementById("topic");
+const copyBtn = document.getElementById("copy");
 
-    function mask(a){ return a ? a.slice(0,6)+'…'+a.slice(-4) : '—'; }
+let polling = null;
 
-    async function genQR(){
-      try{
-        st.textContent = 'Генерирам…';
-        addr.textContent = '—';
-        net.textContent = '—';
-        topicEl.textContent = '—';
+function short(addr){ return addr ? addr.slice(0,6) + "..." + addr.slice(-4) : "—"; }
 
-        const r = await fetch('/wc-uri');
-        const j = await r.json();
-        if(!j.ok || !j.uri){ alert('Неуспешно /wc-uri'); return; }
+async function genQR(){
+  statusEl.textContent = "Генерирам…";
+  addrEl.textContent = "—";
+  chainEl.textContent = "—";
+  topicEl.textContent = "—";
+  copyBtn.disabled = true;
 
-        // QR
-        const api = 'https://api.qrserver.com/v1/create-qr-code/?size=340x340&data=' + encodeURIComponent(j.uri);
-        qrel.innerHTML = `<img src="${api}" width="340" height="340" alt="qr">`;
+  try{
+    const r = await fetch("/wc-uri");
+    const j = await r.json();
+    if(!j.ok || !j.uri) throw new Error(j.error || "no uri");
 
-        st.textContent = 'Изчакай потвърждение в MetaMask…';
-      }catch(e){
-        alert('Неуспешно /wc-uri');
+    qrEl.innerHTML = "";
+    await QRCode.toCanvas(j.uri, { width: 420, margin: 1 }, (err, canvas) => {
+      if(err) throw err;
+      qrEl.appendChild(canvas);
+    });
+
+    statusEl.textContent = "Чакам одобрение…";
+
+    // започваме polling за одобрената сесия
+    if(polling) clearInterval(polling);
+    polling = setInterval(async () => {
+      const r2 = await fetch("/wc-latest");
+      const s = await r2.json();
+      if(s.ok && s.connected){
+        statusEl.textContent = "Свързано";
+        addrEl.textContent = short(s.address);
+        chainEl.textContent = s.chainName || ("Chain " + s.chainId);
+        topicEl.textContent = s.topic;
+        copyBtn.disabled = !s.address;
       }
-    }
+    }, 1500);
+  }catch(err){
+    alert("Неуспешно /wc-uri");
+    console.error(err);
+  }
+}
 
-    // периодично питаме за сесията
-    async function poll(){
-      try{
-        const r = await fetch('/session');
-        const j = await r.json();
-        if(!j.connected){
-          st.textContent = 'Чакам свързване…';
-          return;
-        }
-        st.textContent = 'Свързано';
-        addr.textContent = mask(j.address);
-        net.textContent = j.chainName || j.chainId;
-        topicEl.textContent = j.topic || '—';
-      }catch{}
-    }
-    setInterval(poll, 1200);
+btn.addEventListener("click", genQR);
 
-    // switch бутони
-    for(const b of document.querySelectorAll('button[data-chain]')){
-      b.addEventListener('click', async () => {
-        b.disabled = true;
-        try{
-          const id = Number(b.dataset.chain);
-          const r = await fetch('/switch', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ targetChainId:id })
-          });
-          const j = await r.json();
-          if(!j.ok) alert('Switch error: ' + (j.error||''));
-          else net.textContent = j.chainName || j.chainId;
-        }finally{
-          b.disabled = false;
-        }
+document.querySelectorAll(".mini[data-chain]").forEach(el => {
+  el.addEventListener("click", async () => {
+    const chainId = Number(el.getAttribute("data-chain"));
+    try{
+      const r = await fetch("/wc-switch",{
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ chainId })
       });
+      const j = await r.json();
+      if(!j.ok) throw new Error(j.error || "switch failed");
+
+      chainEl.textContent = j.chainName || ("Chain " + j.chainId);
+      statusEl.textContent = "Свързано";
+    }catch(e){
+      alert("Неуспешна смяна на мрежа");
+      console.error(e);
     }
+  });
+});
 
-    copyBtn.onclick = async () => {
-      const text = addr.textContent.replace('…',''); // показваме маскирано; реалното идва в /session
-      const r = await fetch('/session'); const j = await r.json();
-      if(j.connected && j.address) navigator.clipboard.writeText(j.address);
-    };
-
-    genBtn.onclick = genQR;
-  </script>
+copyBtn.addEventListener("click", async () => {
+  const r = await fetch("/wc-latest");
+  const s = await r.json();
+  if(s?.ok && s.connected && s.address){
+    await navigator.clipboard.writeText(s.address);
+  }
+});
+</script>
 </body>
 </html>
