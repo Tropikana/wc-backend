@@ -95,16 +95,31 @@ function parseAccount(ac) {
   const [ns, cid, addr] = String(ac || "").split(":");
   return { ns, chainId: Number(cid || 0), address: addr || "" };
 }
-function pickBest(ns, preferredOrder = [137, 56, 1]) {
-  const accounts = Array.isArray(ns?.accounts) ? ns.accounts.map(parseAccount) : [];
-  const connected = new Set((ns?.chains || []).map(c => Number(String(c).split(":")[1] || 0)));
-  const byChain = new Map();
-  for (const a of accounts) if (a.chainId && a.address && !byChain.has(a.chainId)) byChain.set(a.chainId, a.address);
 
-  let chosen = preferredOrder.find(cid => connected.has(cid) && byChain.has(cid));
-  if (!chosen) chosen = [...connected][0] || (accounts[0]?.chainId || 0);
-  const address = byChain.get(chosen) || (accounts[0]?.address || "");
-  return { chainId: chosen, address, allAddresses: accounts.map(a => a.address) };
+/**
+ * ВЗЕМИ АКТИВНАТА ВЕРИГА
+ * Wallet-ът връща accounts[0] за активната верига (MetaMask Mobile).
+ * Ако липсва – падни към първата декларирана верига, после към първия адрес.
+ */
+function pickActive(ns) {
+  const accounts = Array.isArray(ns?.accounts) ? ns.accounts.map(parseAccount) : [];
+  if (accounts.length > 0 && accounts[0].chainId && accounts[0].address) {
+    return {
+      chainId: accounts[0].chainId,
+      address: accounts[0].address,
+      allAddresses: accounts.map(a => a.address)
+    };
+  }
+  // fallback: първата верига от chains
+  const firstChain = Array.isArray(ns?.chains) && ns.chains.length
+    ? Number(String(ns.chains[0]).split(":")[1] || 0)
+    : 0;
+  const firstAddr = accounts[0]?.address || "";
+  return {
+    chainId: firstChain || accounts[0]?.chainId || 0,
+    address: firstAddr,
+    allAddresses: accounts.map(a => a.address)
+  };
 }
 
 // ── API: генерира WC URI ──────────────────────────────────────────────────────
@@ -112,12 +127,12 @@ app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    // Минимален namespace → работи стабилно на MetaMask (Polygon, BNB, ETH)
+    // Минимален namespace → стабилно на MetaMask (Polygon, BNB, ETH)
     const requiredNamespaces = {
       eip155: {
         methods: ["personal_sign"],
         chains: ["eip155:137", "eip155:56", "eip155:1"],
-        events: [] // важно: без events, за да не гърми валидатора
+        events: [] // без events, за да не гърми валидаторът при някои портфейли
       }
     };
 
@@ -133,7 +148,7 @@ app.get("/wc-uri", async (_req, res) => {
 
     approvalPromise.then((session) => {
       const ns = session?.namespaces?.eip155;
-      const picked = pickBest(ns, [137, 56, 1]); // Polygon → BNB → ETH
+      const picked = pickActive(ns); // ← ТУК е промяната
       row.session = {
         topic: session.topic,
         addresses: picked.allAddresses,
@@ -169,7 +184,7 @@ app.get("/wc-status", async (req, res) => {
     if (Array.isArray(all) && all.length > 0) {
       const s = all[0];
       const ns = s.namespaces?.eip155;
-      const picked = pickBest(ns, [137, 56, 1]);
+      const picked = pickActive(ns); // ← същата логика
       return res.json({
         status: "approved",
         topic: s.topic,
