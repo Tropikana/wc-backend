@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 3000;
 const WC_PROJECT_ID = (process.env.WC_PROJECT_ID || "").trim();
 const RELAY_URL = process.env.RELAY_URL || "wss://relay.walletconnect.com";
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://wc-backend-tpug.onrender.com";
-
 if (!WC_PROJECT_ID) { console.error("[FATAL] Missing WC_PROJECT_ID"); process.exit(1); }
 
 // ── app ────────────────────────────────────────────────────────────────────────
@@ -37,16 +36,13 @@ async function loadSignClient() {
   if (SignClientFactory) return SignClientFactory;
 
   let mod = null, mode = "esm";
-  try {
-    mod = await import("@walletconnect/sign-client");
-  } catch {
-    mode = "cjs";
-    mod = require("@walletconnect/sign-client");
-  }
+  try { mod = await import("@walletconnect/sign-client"); }
+  catch { mode = "cjs"; mod = require("@walletconnect/sign-client"); }
+
   const keys = Object.keys(mod || {});
   console.log(`[WC IMPORT] mode=${mode}, keys=${JSON.stringify(keys)}`);
 
-  // кандидати от различните билдове
+  // кандидати
   const Candidate =
     mod?.default?.init ? mod.default :
     mod?.SignClient?.init ? mod.SignClient :
@@ -57,13 +53,10 @@ async function loadSignClient() {
     throw new Error(`WalletConnect SignClient export not recognized. mode=${mode}, keys=${JSON.stringify(keys)}`);
   }
 
-  // нормализираме до "factory" функция, която връща инстанция
+  // нормализирана фабрика -> връща инстанция
   SignClientFactory = async (opts) => {
-    if (typeof Candidate.init === "function") {
-      return Candidate.init(opts);                    // вариант с static init(...)
-    }
-    // вариант конструктор new SignClient(...)
-    const instance = new Candidate(opts);
+    if (typeof Candidate.init === "function") return Candidate.init(opts); // static init
+    const instance = new Candidate(opts);                                  // конструктор
     if (!instance || typeof instance.connect !== "function") {
       throw new Error("Constructed SignClient has no .connect()");
     }
@@ -84,8 +77,7 @@ async function getSignClient() {
       metadata: {
         name: "3DHome4U Login",
         description: "Login via WalletConnect / MetaMask",
-        // домейнът трябва да е в Allowlist (Reown/WalletConnect Cloud)
-        url: "https://wc-backend-tpug.onrender.com",
+        url: "https://wc-backend-tpug.onrender.com", // трябва да е в Allowlist
         icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
       }
     });
@@ -99,11 +91,27 @@ async function getSignClient() {
 // ── pending store с TTL ────────────────────────────────────────────────────────
 const PENDING_TTL_MS = 2 * 60 * 1000;
 const pendings = new Map();
-
 setInterval(() => {
   const now = Date.now();
   for (const [id, row] of pendings) if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
 }, 30_000);
+
+// ── помощник: нормализиран approval → Promise<session> ────────────────────────
+function toApprovalPromise(approvalMaybeFnOrPromise) {
+  try {
+    if (typeof approvalMaybeFnOrPromise === "function") {
+      const ret = approvalMaybeFnOrPromise();           // някои билдове връщат функция
+      return (ret && typeof ret.then === "function") ? ret : Promise.resolve(ret);
+    }
+    if (approvalMaybeFnOrPromise && typeof approvalMaybeFnOrPromise.then === "function") {
+      return approvalMaybeFnOrPromise;                  // директен Promise
+    }
+    // fallback: ако нищо не е върнато, връщаме обещание, което никога не изпълнява
+    return new Promise(() => {});
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
 
 // ── API: създай WalletConnect pairing ─────────────────────────────────────────
 app.get("/wc-uri", async (_req, res) => {
@@ -121,11 +129,15 @@ app.get("/wc-uri", async (_req, res) => {
 
     const id = uuidv4();
     const createdAt = Date.now();
-    const row = { createdAt, approval, session: null };
+    const row = { createdAt, approval: null, session: null };
     pendings.set(id, row);
 
-    approval.then((session) => {
-      const ns = session.namespaces?.eip155;
+    // нормализирай approval
+    const approvalPromise = toApprovalPromise(approval);
+    row.approval = approvalPromise;
+
+    approvalPromise.then((session) => {
+      const ns = session?.namespaces?.eip155;
       const first = ns?.accounts?.[0] || "";
       const [_, chainIdStr, address] = first.split(":");
       row.session = {
