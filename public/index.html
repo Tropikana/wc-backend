@@ -48,6 +48,11 @@
 
             <div>Мрежа:</div>
             <div><span id="netBadge" class="badge">—</span></div>
+
+            <div>Баланс:</div>
+            <div><span id="balBadge" class="badge">—</span>
+              <button id="balBtn" class="btn" style="margin-left:8px" disabled>Покажи баланс</button>
+            </div>
           </div>
 
           <div class="chips" id="chains"></div>
@@ -63,11 +68,6 @@
   </div>
 
 <script>
-/**
- * Ако хостваш фронта на друг домейн (напр. www.3dhome4u.com),
- * подай бекенд адрес с query param:  ?api=https://wc-backend-tpug.onrender.com
- * Ако се сервира от същия бекенд, остави празно.
- */
 const API = new URLSearchParams(location.search).get("api") || "";
 
 const $ = sel => document.querySelector(sel);
@@ -76,6 +76,8 @@ const qrBox  = $("#qrBox");
 const stEl   = $("#st");
 const addrB  = $("#addrBadge");
 const netB   = $("#netBadge");
+const balB   = $("#balBadge");
+const balBtn = $("#balBtn");
 const copyB  = $("#copy");
 const topicEl= $("#topic");
 const chainsEl=$("#chains");
@@ -83,11 +85,13 @@ const chainsEl=$("#chains");
 let currId = null;
 let pollTimer = null;
 let lastTopic = null;
+let lastChainRef = null;
+let lastAddress = null;
 
 function shortAddr(a){ return a ? (a.slice(0,6)+"..."+a.slice(-4)) : "—"; }
 function chainNameFromRef(ref){
   const id = Number(String(ref).split(":")[1]||0);
-  const map = {1:"Ethereum Mainnet",56:"BNB Chain",97:"BNB Testnet",137:"Polygon",59144:"Linea",25:"Cronos",338:"Cronos Testnet",42161:"Arbitrum One",43114:"Avalanche C-Chain"};
+  const map = {1:"Ethereum Mainnet",10:"Optimism",25:"Cronos",56:"BNB Chain",97:"BNB Testnet",137:"Polygon",250:"Fantom",324:"zkSync Era",338:"Cronos Testnet",8453:"Base",42161:"Arbitrum One",43114:"Avalanche C-Chain",59144:"Linea"};
   return map[id] || ref;
 }
 
@@ -103,11 +107,16 @@ function renderStatus(data){
   if (data.status === "approved"){
     stEl.textContent = "Свързано";
     stEl.className = "ok";
-    addrB.textContent = shortAddr(data.address || (data.addresses?.[0] || ""));
+    const addr = data.address || (data.addresses?.[0] || "");
+    addrB.textContent = shortAddr(addr);
     netB.textContent  = data.networkName || "—";
-    copyB.disabled = !(data.address || data.addresses?.length);
+    copyB.disabled = !addr;
     topicEl.textContent = data.topic || "—";
     lastTopic = data.topic || null;
+    lastAddress = addr || null;
+    // избери първата верига от списъка на сесията
+    lastChainRef = (data.chains && data.chains[0]) || null;
+    balBtn.disabled = !(lastAddress && lastChainRef);
 
     chainsEl.innerHTML = "";
     (data.chains||[]).forEach(ref=>{
@@ -126,7 +135,7 @@ function renderStatus(data){
             headers:{ "Content-Type":"application/json" },
             body: JSON.stringify({ topic: lastTopic, chainRef: ref })
           });
-          setTimeout(()=>{ if(currId) pollOnce(); else pollOnceDirect(); }, 1500);
+          setTimeout(()=>{ if(currId) pollOnce(); else pollOnceDirect(); }, 1200);
         }finally{ btn.disabled=false; }
       };
       chip.appendChild(btn);
@@ -149,15 +158,10 @@ async function pollOnce(){
   const data = await r.json();
   renderStatus(data);
 }
-async function pollOnceDirect(){ // без id – взимаме първа сесия от клиента
+async function pollOnceDirect(){
   const r = await fetch(API + "/wc-status");
   const data = await r.json();
   renderStatus(data);
-}
-
-function startPolling(){
-  clearInterval(pollTimer);
-  pollTimer = setInterval(pollOnce, 2000);
 }
 
 genBtn.onclick = async ()=>{
@@ -181,10 +185,34 @@ genBtn.onclick = async ()=>{
   }
 };
 
-// копиране на адрес
+function startPolling(){
+  clearInterval(pollTimer);
+  pollTimer = setInterval(pollOnce, 2000);
+}
+
 copyB.onclick = ()=>{
-  const toCopy = addrB.textContent.replace("…","");
-  navigator.clipboard.writeText(toCopy).catch(()=>{});
+  const a = lastAddress || "";
+  if (!a) return;
+  navigator.clipboard.writeText(a).catch(()=>{});
+};
+
+balBtn.onclick = async ()=>{
+  if (!lastAddress || !lastChainRef) return;
+  balBtn.disabled = true;
+  try{
+    const r = await fetch(API + "/rpc-balance", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ chainRef: lastChainRef, address: lastAddress })
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    balB.textContent = data.balanceEther + " (≈ 18d)";
+  }catch(e){
+    balB.textContent = "Грешка";
+  }finally{
+    balBtn.disabled = false;
+  }
 };
 
 // safety: ако имаме активна сесия – покажи я
