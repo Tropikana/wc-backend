@@ -53,9 +53,8 @@ async function loadSignClient() {
   SignClientFactory = async (opts) => {
     if (typeof Candidate.init === "function") return Candidate.init(opts);
     const instance = new Candidate(opts);
-    if (!instance || typeof instance.connect !== "function") {
+    if (!instance || typeof instance.connect !== "function")
       throw new Error("Constructed SignClient has no .connect()");
-    }
     return instance;
   };
   return SignClientFactory;
@@ -78,13 +77,13 @@ async function getSignClient() {
     },
   });
 
-  // при смяна на мрежа обновяваме запомнената сесия
+  // при смяна на мрежа -> обнови кеша
   signClient.on("session_update", ({ topic, params }) => {
     const ns = params?.namespaces?.eip155;
     if (!ns) return;
     for (const [, row] of pendings) {
       if (row.session?.topic === topic) {
-        const picked = pickActive(ns);
+        const picked = pickPreferred(ns, row.preferredChainRef);
         row.session = {
           ...row.session,
           addresses: (ns.accounts || []).map((a) => parseAccount(a).address),
@@ -92,6 +91,7 @@ async function getSignClient() {
           address: picked.address || null,
           chainId: picked.chainId,
           networkName: chainIdToName(picked.chainId),
+          selectedChainRef: picked.chainRef,
         };
       }
     }
@@ -130,33 +130,47 @@ function parseAccount(ac) {
   const [ns, cid, addr] = String(ac || "").split(":");
   return { ns, chainId: Number(cid || 0), address: addr || "" };
 }
-function pickActive(ns) {
-  const accounts = Array.isArray(ns?.accounts) ? ns.accounts.map(parseAccount) : [];
-  if (accounts.length > 0 && accounts[0].chainId && accounts[0].address) {
-    return { chainId: accounts[0].chainId, address: accounts[0].address, allAddresses: accounts.map(a=>a.address) };
-  }
-  const firstChain =
-    Array.isArray(ns?.chains) && ns.chains.length
-      ? Number(String(ns.chains[0]).split(":")[1] || 0)
-      : 0;
-  return { chainId: firstChain, address: accounts[0]?.address || "", allAddresses: accounts.map(a=>a.address) };
-}
 function decToHexChainId(n) { return "0x" + Number(n).toString(16); }
+
+// избери адрес/chain според предпочитаната верига, иначе първата смислена
+function pickPreferred(ns, preferredChainRef) {
+  const accounts = Array.isArray(ns?.accounts) ? ns.accounts.map(parseAccount) : [];
+  const chains = Array.isArray(ns?.chains) ? ns.chains : [];
+  const prefId = Number(String(preferredChainRef || "").split(":")[1] || 0);
+
+  // 1) опитай да намериш account за предпочитаната
+  if (prefId && accounts.length) {
+    const acc = accounts.find((a) => a.chainId === prefId);
+    if (acc?.address) {
+      return { chainId: prefId, address: acc.address, chainRef: `eip155:${prefId}` };
+    }
+  }
+  // 2) ако няма – ако chains съдържа предпочитаната, ползвай първия адрес
+  if (prefId && chains.includes(`eip155:${prefId}`) && accounts[0]?.address) {
+    return { chainId: prefId, address: accounts[0].address, chainRef: `eip155:${prefId}` };
+  }
+  // 3) иначе – първия account (както беше преди)
+  if (accounts[0]?.address) {
+    return { chainId: accounts[0].chainId, address: accounts[0].address, chainRef: `eip155:${accounts[0].chainId}` };
+  }
+  // 4) fallback към първата верига
+  const firstChain = chains[0] || "eip155:1";
+  const firstId = Number(firstChain.split(":")[1] || 1);
+  return { chainId: firstId, address: accounts[0]?.address || "", chainRef: firstChain };
+}
 
 // ------- API: генерира WC URI за избраната мрежа -------
 app.get("/wc-uri", async (req, res) => {
   try {
     const client = await getSignClient();
 
-    // избираме мрежата от query (?chain=eip155:56). Ако я няма/невалидна – по подразбиране Ethereum Mainnet.
     const chainRef = String(req.query.chain || "").trim();
     const selectedChain = ALLOWED_CHAIN_REFS.has(chainRef) ? chainRef : "eip155:1";
 
-    // Даваме само ЕДНА мрежа в optionalNamespaces → потребителят одобрява точно нея.
     const optionalNamespaces = {
       eip155: {
         methods: ["personal_sign", "eth_accounts", "eth_chainId", "wallet_switchEthereumChain"],
-        chains: [selectedChain],
+        chains: [selectedChain],              // искаме approval за точно тази
         events: [],
       },
     };
@@ -165,7 +179,7 @@ app.get("/wc-uri", async (req, res) => {
 
     const id = uuidv4();
     const createdAt = Date.now();
-    const row = { createdAt, approval: null, session: null };
+    const row = { createdAt, approval: null, session: null, preferredChainRef: selectedChain };
     pendings.set(id, row);
 
     const approvalPromise = (typeof approval === "function") ? approval() : approval;
@@ -174,14 +188,15 @@ app.get("/wc-uri", async (req, res) => {
     approvalPromise
       .then((session) => {
         const ns = session?.namespaces?.eip155;
-        const picked = pickActive(ns);
+        const picked = pickPreferred(ns, row.preferredChainRef);
         row.session = {
           topic: session.topic,
-          addresses: picked.allAddresses,
+          addresses: (ns?.accounts || []).map((a) => parseAccount(a).address),
           chains: ns?.chains || [],
           address: picked.address || null,
           chainId: picked.chainId,
           networkName: chainIdToName(picked.chainId),
+          selectedChainRef: picked.chainRef,
         };
         console.log("[WC APPROVED]", session.topic, "chains=", ns?.chains, "picked=", picked);
       })
@@ -204,22 +219,23 @@ app.get("/wc-status", async (req, res) => {
     if (expired) { pendings.delete(id); return res.json({ status: "expired" }); }
     return res.json({ status: "pending" });
   }
-  // fallback: ако имаме активна сесия в клиента
+  // fallback: ако има активна сесия в клиента
   try {
     const client = await getSignClient();
     const all = client?.session?.getAll ? client.session.getAll() : [];
     if (Array.isArray(all) && all.length > 0) {
       const s = all[0];
       const ns = s.namespaces?.eip155;
-      const picked = pickActive(ns);
+      const picked = pickPreferred(ns, null);
       return res.json({
         status: "approved",
         topic: s.topic,
-        addresses: picked.allAddresses,
+        addresses: (ns?.accounts || []).map((a) => parseAccount(a).address),
         chains: ns?.chains || [],
         address: picked.address || null,
         chainId: picked.chainId,
         networkName: chainIdToName(picked.chainId),
+        selectedChainRef: picked.chainRef,
       });
     }
   } catch {}
