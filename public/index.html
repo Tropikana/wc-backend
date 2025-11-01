@@ -1,138 +1,146 @@
 <!doctype html>
 <html lang="bg">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Влизане с WalletConnect / MetaMask</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root{
-      --bg:#0f141a; --fg:#e6edf3; --muted:#9fb0bf;
-      --card:#0b1116; --pill:#1f2a36; --accent:#3b82f6;
-      --good:#22c55e; --bad:#ef4444;
+    :root {
+      --bg: #0f1216;
+      --panel: #161b22;
+      --text: #e6edf3;
+      --muted: #9aa7b2;
+      --accent: #2f81f7;
+      --chip: #0b2942;
+      --ok: #22c55e;
+      --bad: #ef4444;
     }
-    body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,Segoe UI,Roboto,Inter,Arial}
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,Segoe UI,Roboto,Arial}
     .wrap{max-width:980px;margin:40px auto;padding:0 16px}
-    .card{background:var(--card);border-radius:18px;padding:20px 24px;box-shadow:0 0 0 1px #ffffff14}
-    h1{font-size:28px;margin:0 0 12px}
-    .row{display:flex;gap:24px;align-items:flex-start}
-    .left{width:360px}
-    .right{flex:1;min-width:280px}
-    button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
-    button:disabled{opacity:.5;cursor:not-allowed}
-    .pill{display:inline-block;background:var(--pill);padding:6px 10px;border-radius:999px;font-size:13px;margin-right:8px}
-    .status{font-weight:600}
-    .ok{color:var(--good)} .err{color:var(--bad)}
-    #qr{width:360px;height:360px;background:#0a0f14;border-radius:12px;display:grid;place-items:center;overflow:hidden}
-    #qr img{width:100%;height:100%;object-fit:contain}
-    .net-row{margin:8px 0}
-    .net-row .pill{margin-bottom:8px}
-    .copy{margin-top:10px}
-    .topic{color:var(--muted);font-size:12px;margin-top:10px;word-break:break-all}
+    h1{font-size:28px;margin:0 0 16px}
+    .card{background:var(--panel);border-radius:14px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .row{display:flex;gap:28px;align-items:flex-start}
+    .left{flex:0 0 360px}
+    .qr{width:100%;aspect-ratio:1;border-radius:12px;background:#0a0d10;display:grid;place-items:center;overflow:hidden}
+    .qr img{width:100%;height:100%;object-fit:contain}
+    .right{flex:1}
+    .k{color:var(--muted);min-width:72px}
+    .line{display:flex;gap:12px;align-items:center;margin:10px 0}
+    .chip{background:var(--chip);color:var(--text);padding:6px 10px;border-radius:999px;font-size:13px}
+    .btn{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .pill{background:#12263a;border-radius:999px;padding:4px 8px;margin-left:8px;font-size:12px;cursor:pointer}
+    .muted{color:var(--muted)}
+    .ok{color:var(--ok)} .bad{color:var(--bad)}
   </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Влизане с WalletConnect / MetaMask</h1>
-  <p>1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
+  <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
 
   <div class="card">
     <div class="row">
       <div class="left">
-        <button id="btn" onclick="start()" >Генерирай QR</button>
-        <div id="qr" style="margin-top:12px;"></div>
+        <button id="btnGen" class="btn">Генерирай QR</button>
+        <div style="height:12px"></div>
+        <div class="qr"><img id="qr" alt=""></div>
       </div>
 
       <div class="right">
-        <div>Статус: <span id="st" class="status">—</span></div>
-        <div style="margin-top:10px;">Адрес: <span id="addr" class="pill">—</span></div>
-        <div style="margin-top:6px;">Мрежа: <span id="net" class="pill">—</span></div>
+        <div class="line"><span class="k">Статус:</span><span id="st" class="muted">Генерирам…</span></div>
+        <div class="line"><span class="k">Адрес:</span><span id="addr" class="chip">—</span></div>
+        <div class="line"><span class="k">Мрежа:</span><span id="chain" class="chip">—</span></div>
 
-        <div class="net-row" style="margin-top:12px;">
-          <span class="pill">Ethereum Mainnet</span><button class="pill" onclick="sw(1)">Switch</button>
-          <span class="pill">Linea</span><button class="pill" onclick="sw(59144)">Switch</button>
-          <span class="pill">BNB Chain</span><button class="pill" onclick="sw(56)">Switch</button>
-          <span class="pill">Polygon</span><button class="pill" onclick="sw(137)">Switch</button>
+        <div style="height:6px"></div>
+        <div class="line">
+          <span class="chip">Ethereum Mainnet</span><span class="pill" onclick="switchTo(1)">Switch</span>
+          <span class="chip">Linea</span><span class="pill" onclick="switchTo(59144)">Switch</span>
+          <span class="chip">BNB Chain</span><span class="pill" onclick="switchTo(56)">Switch</span>
+        </div>
+        <div class="line">
+          <span class="chip">BNB Testnet</span><span class="pill" onclick="switchTo(97)">Switch</span>
+          <span class="chip">Polygon</span><span class="pill" onclick="switchTo(137)">Switch</span>
         </div>
 
-        <button class="copy" onclick="copyAddr()">Копирай адрес</button>
-        <div id="topic" class="topic"></div>
+        <div style="height:10px"></div>
+        <button class="btn" onclick="copyAddr()">Копирай адрес</button>
+
+        <div style="height:16px"></div>
+        <div class="muted">Topic: <span id="topic">—</span></div>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-let token = null;
-let fullAddress = "";
+const $ = (id) => document.getElementById(id);
 
-function el(id){ return document.getElementById(id); }
-function setStatus(txt, ok){
-  el("st").textContent = txt;
-  el("st").className = "status " + (ok ? "ok":"err");
-}
-function showQR(dataUri){
-  el("qr").innerHTML = `<img src="${dataUri}">`;
-}
+let POLL = null;
 
-async function start(){
-  el("qr").innerHTML = "";
-  el("addr").textContent = "—";
-  el("net").textContent  = "—";
-  el("topic").textContent = "";
-  setStatus("Генерирам…", true);
+async function genQR() {
+  $('st').textContent = 'Генерирам…';
+  $('addr').textContent = '—';
+  $('chain').textContent = '—';
+  $('topic').textContent = '—';
+  $('qr').src = '';
+  try {
+    const r = await fetch('/wc-uri');
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    $('qr').src = j.png;
+    $('st').textContent = 'Изчакай одобрение в портфейла…';
 
-  try{
-    const u = await fetch("/wc-uri").then(r=>r.json());
-    if(!u.ok){ alert("Неуспешно /wc-uri"); setStatus("Грешка", false); return; }
-
-    // рендерираме QR локално (използвай вграден скенер на MetaMask)
-    const {uri} = u;
-    token = u.token;
-
-    // бърз embed на QR без canvas библиотеки (Google Charts)
-    const data = encodeURIComponent(uri);
-    const qrUrl = `https://chart.googleapis.com/chart?cht=qr&chs=360x360&chl=${data}`;
-    showQR(qrUrl);
-
-    setStatus("Генерирам…", true);
-
-    // чакаме одобрението (long poll)
-    const sess = await fetch(`/wait-session?token=${token}`).then(r=>r.json());
-    if(!sess.ok){ alert("Неуспешно одобрение"); setStatus("Грешка", false); return; }
-
-    fullAddress = sess.address;
-    el("addr").textContent = sess.addressShort;
-    el("net").textContent  = sess.chainLabel;
-    el("topic").textContent = "Topic: " + sess.topic;
-    setStatus("Свързано", true);
-  }catch(e){
-    console.error(e);
-    alert("Грешка при свързване");
-    setStatus("Грешка", false);
+    // старт на polling, за да вземем адрес/мрежа след одобрение
+    if (POLL) clearInterval(POLL);
+    POLL = setInterval(updateStatus, 1500);
+  } catch (e) {
+    alert('Неуспешно /wc-uri\n' + e.message);
+    $('st').textContent = 'Грешка';
   }
 }
 
-async function sw(chainId){
-  if(!token){ alert("Няма активна сесия."); return; }
-  try{
-    const r = await fetch("/switch", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ token, chainId })
-    }).then(r=>r.json());
+async function updateStatus() {
+  try {
+    const r = await fetch('/wc-status');
+    const j = await r.json();
+    if (!j.connected) return;
 
-    if(!r.ok){ alert("Грешка при смяна: " + (r.error||"")); return; }
-    el("net").textContent = r.chainLabel || ("eip155:" + r.chainId);
-  }catch(e){
-    console.error(e);
-    alert("Грешка при смяна");
+    $('st').textContent = 'Свързано';
+    $('addr').textContent = j.address ? j.address.slice(0,6)+'…'+j.address.slice(-4) : '—';
+    $('chain').textContent = j.chainName || ('Chain '+j.chainId);
+    $('topic').textContent = j.topic || '—';
+
+    if (POLL) { clearInterval(POLL); POLL = null; }
+  } catch (_) {}
+}
+
+async function switchTo(chainId) {
+  try {
+    const r = await fetch('/switch-chain', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ targetChainId: chainId })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Switch failed');
+    $('chain').textContent = j.chainName || ('Chain '+j.chainId);
+    $('st').textContent = 'Свързано';
+  } catch (e) {
+    alert('Switch error: ' + e.message);
   }
 }
 
-function copyAddr(){
-  if(!fullAddress){ return; }
-  navigator.clipboard.writeText(fullAddress);
+async function copyAddr() {
+  const lbl = $('addr').textContent;
+  if (!lbl || lbl === '—') return;
+  try {
+    await navigator.clipboard.writeText(lbl);
+    $('st').textContent = 'Адресът е копиран';
+    setTimeout(()=> $('st').textContent='Свързано', 1000);
+  } catch(_) {}
 }
+
+$('btnGen').onclick = genQR;
 </script>
 </body>
 </html>
