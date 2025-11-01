@@ -24,18 +24,36 @@
     .chip{background:var(--chip);color:var(--chipText);padding:6px 10px;border-radius:999px;font-size:13px}
     .chip .mini{margin-left:8px;background:#1f6fff;color:#fff;border:none;border-radius:8px;padding:2px 6px;cursor:pointer}
     small{user-select:all}
+    .row-top{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+    select{background:#0a0d10;color:#e8eef7;border:1px solid #2a3344;border-radius:10px;padding:9px 12px}
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Влизане с WalletConnect / MetaMask</h1>
-    <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконката горе вдясно).</p>
+    <p class="muted">Избери мрежа, после генерирай QR и сканирай с <b>вградения</b> скенер на MetaMask.</p>
 
     <div class="card">
+      <div class="row-top">
+        <label for="chainSel" class="muted">Мрежа за логин:</label>
+        <select id="chainSel">
+          <option value="eip155:1">Ethereum Mainnet</option>
+          <option value="eip155:56">BNB Chain</option>
+          <option value="eip155:97">BNB Testnet</option>
+          <option value="eip155:137">Polygon</option>
+          <option value="eip155:59144">Linea</option>
+          <option value="eip155:25">Cronos</option>
+          <option value="eip155:338">Cronos Testnet</option>
+          <option value="eip155:42161">Arbitrum One</option>
+          <option value="eip155:43114">Avalanche C-Chain</option>
+          <option value="eip155:8453">Base</option>
+        </select>
+        <button id="gen" class="btn">Генерирай QR</button>
+      </div>
+
       <div class="row">
         <div>
-          <button id="gen" class="btn">Генерирай QR</button>
-          <div class="qr" id="qrBox"><span class="muted">Натисни „Генерирай QR“</span></div>
+          <div class="qr" id="qrBox"><span class="muted">Чакам да генерираш QR…</span></div>
         </div>
 
         <div style="min-width:280px;flex:1">
@@ -51,173 +69,4 @@
 
             <div>Баланс:</div>
             <div><span id="balBadge" class="badge">—</span>
-              <button id="balBtn" class="btn" style="margin-left:8px" disabled>Покажи баланс</button>
-            </div>
-          </div>
-
-          <div class="chips" id="chains"></div>
-
-          <div style="margin-top:14px">
-            <button id="copy" class="btn" disabled>Копирай адрес</button>
-          </div>
-
-          <div class="muted" style="margin-top:12px">Topic: <small id="topic">—</small></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-<script>
-const API = new URLSearchParams(location.search).get("api") || "";
-
-const $ = sel => document.querySelector(sel);
-const genBtn = $("#gen");
-const qrBox  = $("#qrBox");
-const stEl   = $("#st");
-const addrB  = $("#addrBadge");
-const netB   = $("#netBadge");
-const balB   = $("#balBadge");
-const balBtn = $("#balBtn");
-const copyB  = $("#copy");
-const topicEl= $("#topic");
-const chainsEl=$("#chains");
-
-let currId = null;
-let pollTimer = null;
-let lastTopic = null;
-let lastChainRef = null;
-let lastAddress = null;
-
-function shortAddr(a){ return a ? (a.slice(0,6)+"..."+a.slice(-4)) : "—"; }
-function chainNameFromRef(ref){
-  const id = Number(String(ref).split(":")[1]||0);
-  const map = {1:"Ethereum Mainnet",10:"Optimism",25:"Cronos",56:"BNB Chain",97:"BNB Testnet",137:"Polygon",250:"Fantom",324:"zkSync Era",338:"Cronos Testnet",8453:"Base",42161:"Arbitrum One",43114:"Avalanche C-Chain",59144:"Linea"};
-  return map[id] || ref;
-}
-
-function setQR(uri){
-  const img = document.createElement("img");
-  img.alt = "QR";
-  img.src = "https://api.qrserver.com/v1/create-qr-code/?size=360x360&data="+encodeURIComponent(uri);
-  qrBox.innerHTML="";
-  qrBox.appendChild(img);
-}
-
-function renderStatus(data){
-  if (data.status === "approved"){
-    stEl.textContent = "Свързано";
-    stEl.className = "ok";
-    const addr = data.address || (data.addresses?.[0] || "");
-    addrB.textContent = shortAddr(addr);
-    netB.textContent  = data.networkName || "—";
-    copyB.disabled = !addr;
-    topicEl.textContent = data.topic || "—";
-    lastTopic = data.topic || null;
-    lastAddress = addr || null;
-    // избери първата верига от списъка на сесията
-    lastChainRef = (data.chains && data.chains[0]) || null;
-    balBtn.disabled = !(lastAddress && lastChainRef);
-
-    chainsEl.innerHTML = "";
-    (data.chains||[]).forEach(ref=>{
-      const chip = document.createElement("span");
-      chip.className="chip";
-      chip.textContent = chainNameFromRef(ref);
-      const btn = document.createElement("button");
-      btn.className="mini";
-      btn.textContent="Switch";
-      btn.onclick = async () => {
-        if (!lastTopic) return;
-        btn.disabled = true;
-        try{
-          await fetch(API + "/wc-switch", {
-            method:"POST",
-            headers:{ "Content-Type":"application/json" },
-            body: JSON.stringify({ topic: lastTopic, chainRef: ref })
-          });
-          setTimeout(()=>{ if(currId) pollOnce(); else pollOnceDirect(); }, 1200);
-        }finally{ btn.disabled=false; }
-      };
-      chip.appendChild(btn);
-      chainsEl.appendChild(chip);
-    });
-  }else if (data.status === "pending"){
-    stEl.textContent = "Очаква потвърждение…";
-    stEl.className = "";
-  }else if (data.status === "expired"){
-    stEl.textContent = "Изтекло – генерирай нов QR.";
-    stEl.className = "err";
-  }else{
-    stEl.textContent = "not_found";
-    stEl.className = "err";
-  }
-}
-
-async function pollOnce(){
-  const r = await fetch(API + "/wc-status?id="+encodeURIComponent(currId));
-  const data = await r.json();
-  renderStatus(data);
-}
-async function pollOnceDirect(){
-  const r = await fetch(API + "/wc-status");
-  const data = await r.json();
-  renderStatus(data);
-}
-
-genBtn.onclick = async ()=>{
-  genBtn.disabled = true;
-  try{
-    stEl.textContent = "Генерирам…";
-    stEl.className = "muted";
-    const r = await fetch(API + "/wc-uri");
-    const data = await r.json();
-    if (!data.uri){ stEl.textContent="Грешка при /wc-uri"; stEl.className="err"; return; }
-    currId = data.id;
-    setQR(data.uri);
-    stEl.textContent = "Сканирай QR от MetaMask";
-    stEl.className = "";
-    startPolling();
-  }catch(e){
-    stEl.textContent = "Грешка";
-    stEl.className = "err";
-  }finally{
-    genBtn.disabled = false;
-  }
-};
-
-function startPolling(){
-  clearInterval(pollTimer);
-  pollTimer = setInterval(pollOnce, 2000);
-}
-
-copyB.onclick = ()=>{
-  const a = lastAddress || "";
-  if (!a) return;
-  navigator.clipboard.writeText(a).catch(()=>{});
-};
-
-balBtn.onclick = async ()=>{
-  if (!lastAddress || !lastChainRef) return;
-  balBtn.disabled = true;
-  try{
-    const r = await fetch(API + "/rpc-balance", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ chainRef: lastChainRef, address: lastAddress })
-    });
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
-    balB.textContent = data.balanceEther + " (≈ 18d)";
-  }catch(e){
-    balB.textContent = "Грешка";
-  }finally{
-    balBtn.disabled = false;
-  }
-};
-
-// safety: ако имаме активна сесия – покажи я
-pollOnceDirect();
-setInterval(()=>{ if(!currId) pollOnceDirect(); }, 5000);
-</script>
-</body>
-</html>
+              <button id="balBtn" class="btn" style="margin-left:8
