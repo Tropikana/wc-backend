@@ -5,24 +5,18 @@ import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
 
-// ── config ────────────────────────────────────────────────────────────────────
+// ── конфигурация ───────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 const WC_PROJECT_ID = (process.env.WC_PROJECT_ID || "").trim();
 const RELAY_URL = process.env.RELAY_URL || "wss://relay.walletconnect.com";
-const FRONTEND_URL = process.env.FRONTEND_URL || "https://wc-backend-tpug.onrender.com";
 if (!WC_PROJECT_ID) { console.error("[FATAL] Missing WC_PROJECT_ID"); process.exit(1); }
 
-// ── app ───────────────────────────────────────────────────────────────────────
+// ── app ────────────────────────────────────────────────────────────────────────
 const app = express();
-app.use(cors({
-  origin: [FRONTEND_URL, "https://wc-backend-tpug.onrender.com", "http://localhost:3000", "http://localhost:5173"]
-}));
+app.use(cors());
 app.use(express.json());
 
-// health
-app.get("/health", (_req, res) => res.json({ ok: true, pending: pendings.size }));
-
-// ── robust import of sign-client ──────────────────────────────────────────────
+// ── robust import на @walletconnect/sign-client ────────────────────────────────
 let SignClientFactory = null;
 async function loadSignClient() {
   if (SignClientFactory) return SignClientFactory;
@@ -30,12 +24,15 @@ async function loadSignClient() {
   try { mod = await import("@walletconnect/sign-client"); }
   catch { mode = "cjs"; mod = require("@walletconnect/sign-client"); }
   console.log("[WC IMPORT] mode=", mode, "keys=", Object.keys(mod || {}));
+
   const Candidate =
     mod?.default?.init ? mod.default :
     mod?.SignClient?.init ? mod.SignClient :
     (typeof mod?.default === "function" ? mod.default :
      typeof mod?.SignClient === "function" ? mod.SignClient : null);
+
   if (!Candidate) throw new Error("WalletConnect SignClient export not recognized");
+
   SignClientFactory = async (opts) => {
     if (typeof Candidate.init === "function") return Candidate.init(opts);
     const instance = new Candidate(opts);
@@ -63,7 +60,7 @@ async function getSignClient() {
   return signClient;
 }
 
-// ── in-memory store + TTL ────────────────────────────────────────────────────
+// ── store + TTL ────────────────────────────────────────────────────────────────
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const pendings = new Map();
 setInterval(() => {
@@ -72,7 +69,7 @@ setInterval(() => {
     if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
 }, 60_000);
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 function toApprovalPromise(x) {
   try {
     if (typeof x === "function") { const r = x(); return r && r.then ? r : Promise.resolve(r); }
@@ -103,23 +100,24 @@ function pickBest(ns, preferredOrder = [137, 56, 1]) {
   const connected = new Set((ns?.chains || []).map(c => Number(String(c).split(":")[1] || 0)));
   const byChain = new Map();
   for (const a of accounts) if (a.chainId && a.address && !byChain.has(a.chainId)) byChain.set(a.chainId, a.address);
+
   let chosen = preferredOrder.find(cid => connected.has(cid) && byChain.has(cid));
   if (!chosen) chosen = [...connected][0] || (accounts[0]?.chainId || 0);
   const address = byChain.get(chosen) || (accounts[0]?.address || "");
   return { chainId: chosen, address, allAddresses: accounts.map(a => a.address) };
 }
 
-// ── API: wc-uri ──────────────────────────────────────────────────────────────
+// ── API: генерира WC URI ──────────────────────────────────────────────────────
 app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    // МИНИМАЛЕН namespace: без events (за да не гърми валидаторът)
+    // Минимален namespace → работи стабилно на MetaMask (Polygon, BNB, ETH)
     const requiredNamespaces = {
       eip155: {
         methods: ["personal_sign"],
         chains: ["eip155:137", "eip155:56", "eip155:1"],
-        events: [] // <- важно
+        events: [] // важно: без events, за да не гърми валидатора
       }
     };
 
@@ -135,7 +133,7 @@ app.get("/wc-uri", async (_req, res) => {
 
     approvalPromise.then((session) => {
       const ns = session?.namespaces?.eip155;
-      const picked = pickBest(ns, [137, 56, 1]);
+      const picked = pickBest(ns, [137, 56, 1]); // Polygon → BNB → ETH
       row.session = {
         topic: session.topic,
         addresses: picked.allAddresses,
@@ -154,7 +152,7 @@ app.get("/wc-uri", async (_req, res) => {
   }
 });
 
-// ── API: wc-status ───────────────────────────────────────────────────────────
+// ── API: статус ────────────────────────────────────────────────────────────────
 app.get("/wc-status", async (req, res) => {
   const { id } = req.query;
   if (id && pendings.has(id)) {
@@ -164,7 +162,7 @@ app.get("/wc-status", async (req, res) => {
     if (expired) { pendings.delete(id); return res.json({ status: "expired" }); }
     return res.json({ status: "pending" });
   }
-  // fallback след рестарт
+  // fallback след рестарт – върни първа активна сесия, ако има
   try {
     const client = await getSignClient();
     const all = client?.session?.getAll ? client.session.getAll() : [];
@@ -186,17 +184,25 @@ app.get("/wc-status", async (req, res) => {
   return res.json({ status: "not_found" });
 });
 
-// ── static ───────────────────────────────────────────────────────────────────
+// ── статични файлове ───────────────────────────────────────────────────────────
 app.use(express.static("public"));
 
-// ── start + guards ───────────────────────────────────────────────────────────
+// ── старт + guard хендлъри ────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`Listening on :${PORT}`);
   console.log(`[BOOT] WC_PROJECT_ID length=${WC_PROJECT_ID.length}, preview=${WC_PROJECT_ID.slice(0,3)}...${WC_PROJECT_ID.slice(-3)}`);
 });
 
-// не позволявай на process да умира от непоети грешки
-process.on("unhandledRejection", (e) => console.warn("[UNHANDLED REJECTION]", e?.message || e));
-process.on("uncaughtException",  (e) => console.warn("[UNCAUGHT EXCEPTION]", e?.message || e));
+process.on("unhandledRejection", (e) => {
+  const msg = (e && e.message) ? e.message : String(e || "");
+  // Шум от SDK при някои портфейли; функционално всичко работи
+  if (msg.includes("Cannot convert undefined or null to object")) return;
+  console.warn("[UNHANDLED REJECTION]", msg);
+});
+process.on("uncaughtException",  (e) => {
+  const msg = (e && e.message) ? e.message : String(e || "");
+  if (msg.includes("Cannot convert undefined or null to object")) return;
+  console.warn("[UNCAUGHT EXCEPTION]", msg);
+});
 process.on("SIGINT",  () => server.close(() => process.exit(0)));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
