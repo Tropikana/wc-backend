@@ -138,14 +138,18 @@ function toApprovalPromise(x) {
 function chainIdToName(id) {
   const map = {
     1: "Ethereum Mainnet",
+    10: "Optimism",
+    25: "Cronos",
     56: "BNB Chain",
     97: "BNB Testnet",
     137: "Polygon",
-    59144: "Linea",
-    25: "Cronos",
+    250: "Fantom",
+    324: "zkSync Era",
     338: "Cronos Testnet",
+    8453: "Base",
     42161: "Arbitrum One",
     43114: "Avalanche C-Chain",
+    59144: "Linea",
   };
   return map[id] || `eip155:${id}`;
 }
@@ -177,20 +181,38 @@ function decToHexChainId(n) {
   return "0x" + Number(n).toString(16);
 }
 
+// ── списъкът с вериги за бутони и за connect ───────────────────────────────────
+const EIP155_CHAIN_REFS = [
+  "eip155:1",
+  "eip155:10",
+  "eip155:25",
+  "eip155:56",
+  "eip155:97",
+  "eip155:137",
+  "eip155:250",
+  "eip155:324",
+  "eip155:338",
+  "eip155:8453",
+  "eip155:42161",
+  "eip155:43114",
+  "eip155:59144",
+];
+
 // ── API: генерира WC URI ──────────────────────────────────────────────────────
 app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    const requiredNamespaces = {
+    // използваме optionalNamespaces (required е deprecated)
+    const optionalNamespaces = {
       eip155: {
-        methods: ["personal_sign", "eth_accounts", "eth_chainId"],
-        chains: ["eip155:137", "eip155:56", "eip155:1"],
+        methods: ["personal_sign", "eth_accounts", "eth_chainId", "wallet_switchEthereumChain"],
+        chains: EIP155_CHAIN_REFS,
         events: [],
       },
     };
 
-    const { uri, approval } = await client.connect({ requiredNamespaces });
+    const { uri, approval } = await client.connect({ optionalNamespaces });
 
     const id = uuidv4();
     const createdAt = Date.now();
@@ -264,7 +286,7 @@ app.get("/wc-status", async (req, res) => {
   return res.json({ status: "not_found" });
 });
 
-// ── API: смяна на мрежа ───────────────────────────────────────────────────────
+// ── API: смяна на мрежа (wallet_switchEthereumChain) ──────────────────────────
 app.post("/wc-switch", async (req, res) => {
   try {
     const { topic, chainRef } = req.body;
@@ -291,6 +313,46 @@ app.post("/wc-switch", async (req, res) => {
   }
 });
 
+// ── API: баланс през Reown Blockchain API (unified RPC) ───────────────────────
+/**
+ * POST /rpc-balance
+ * body: { chainRef: "eip155:56", address: "0x..." }
+ * Връща { balanceWei: "0x...", balanceEther: "..." }
+ */
+app.post("/rpc-balance", async (req, res) => {
+  try {
+    const { chainRef, address } = req.body || {};
+    if (!chainRef || !address) return res.status(400).json({ error: "chainRef and address are required" });
+
+    // JSON-RPC към Reown Blockchain API.
+    // Примерен ендпойнт: https://rpc.walletconnect.com/v1/?chainId=eip155:56&projectId=WC_PROJECT_ID
+    const url = `https://rpc.walletconnect.com/v1/?chainId=${encodeURIComponent(chainRef)}&projectId=${encodeURIComponent(WC_PROJECT_ID)}`;
+
+    const payload = {
+      id: Date.now(),
+      jsonrpc: "2.0",
+      method: "eth_getBalance",
+      params: [address, "latest"],
+    };
+
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || "RPC error");
+    const balanceWeiHex = j.result; // hex
+    const wei = BigInt(balanceWeiHex);
+    // повечето EVM вериги са 18 десетични
+    const ether = Number(wei) / 1e18;
+    res.json({ balanceWei: balanceWeiHex, balanceEther: ether.toString() });
+  } catch (e) {
+    console.warn("[RPC BALANCE ERROR]", e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
 // ── healthcheck ────────────────────────────────────────────────────────────────
 app.get("/healthz", (_req, res) => res.send("ok"));
 
@@ -298,15 +360,10 @@ app.get("/healthz", (_req, res) => res.send("ok"));
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// сервирай папката public (CSS/JS/изображения и самото index.html при директен достъп)
 app.use(express.static(path.join(__dirname, "public")));
-
-// root → public/index.html (поправка на ENOENT)
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
-
-// SPA fallback (ако отвориш непознат път – пак да връща index.html)
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -314,23 +371,9 @@ app.get("*", (_req, res) => {
 // ── старт ─────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`Listening on :${PORT}`);
-  console.log(
-    `[BOOT] WC_PROJECT_ID length=${WC_PROJECT_ID.length}, preview=${WC_PROJECT_ID.slice(
-      0,
-      3
-    )}.${WC_PROJECT_ID.slice(-3)}`
-  );
+  console.log(`[BOOT] WC_PROJECT_ID length=${WC_PROJECT_ID.length}, preview=${WC_PROJECT_ID.slice(0,3)}.${WC_PROJECT_ID.slice(-3)}`);
 });
-
-process.on("unhandledRejection", (e) => {
-  const msg = e?.message ? e.message : String(e || "");
-  if (msg.includes("Cannot convert undefined or null to object")) return;
-  console.warn("[UNHANDLED REJECTION]", msg);
-});
-process.on("uncaughtException", (e) => {
-  const msg = e?.message ? e.message : String(e || "");
-  if (msg.includes("Cannot convert undefined or null to object")) return;
-  console.warn("[UNCAUGHT EXCEPTION]", msg);
-});
+process.on("unhandledRejection", (e) => console.warn("[UNHANDLED REJECTION]", e?.message || e));
+process.on("uncaughtException", (e) => console.warn("[UNCAUGHT EXCEPTION]", e?.message || e));
 process.on("SIGINT", () => server.close(() => process.exit(0)));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
