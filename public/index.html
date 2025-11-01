@@ -2,86 +2,111 @@
 <html lang="bg">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Влизане с WalletConnect / MetaMask</title>
   <style>
-    :root { --bg:#0b0d10; --panel:#14171b; --text:#e6e9ee; --muted:#a7b0bd; --accent:#4da3ff; --border:#22262c; }
-    *{box-sizing:border-box}
-    body{margin:0;padding:24px;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-    .wrap{max-width:720px;margin:0 auto}
-    h1{margin:0 0 12px}
-    p.muted{color:var(--muted);margin-top:0}
-    .card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
-    button{background:var(--accent);color:#03111f;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
-    button:hover{filter:brightness(1.05)}
-    .row{margin:12px 0}
-    #qr img{width:260px;height:260px;border-radius:12px;display:block}
-    code{background:#0f1318;border:1px solid #1c2128;color:#d7e3ff;padding:.2rem .4rem;border-radius:6px}
-    .error{color:#ff8787}
-    .ok{color:#aef39c}
-    .stat{color:#ffd38b}
-    .cols{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
-    .pill{background:#0f1318;border:1px solid #1c2128;border-radius:12px;padding:6px 10px;display:inline-block}
+    :root { color-scheme: dark; }
+    body{margin:0;background:#0b0f14;color:#e5ecf4;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{max-width:980px;margin:40px auto;padding:0 16px}
+    h1{font-weight:700;margin:0 0 12px}
+    .card{background:#121821;border:1px solid #1f2a37;border-radius:14px;padding:20px}
+    .btn{background:#3b82f6;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .qrbox{width:420px;max-width:100%;aspect-ratio:1/1;border-radius:10px;background:#0e141b;
+          display:flex;align-items:center;justify-content:center;margin-top:12px;border:1px solid #1f2a37}
+    .status-ok{color:#34d399;font-weight:600}
+    .pill{display:inline-block;background:#0f1720;border:1px solid #253242;border-radius:999px;padding:6px 10px;font-size:14px}
+    .row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Влизане с WalletConnect / MetaMask</h1>
-    <p class="muted">1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконата горе вдясно).</p>
-    <div class="card">
-      <div class="row"><button id="btn">Генерирай QR</button></div>
-      <div id="qr" class="row"></div>
-      <div id="status" class="row stat"></div>
-      <div id="result" class="row"></div>
+<div class="wrap">
+  <h1>Влизане с WalletConnect / MetaMask</h1>
+  <p>1) Натисни бутона. 2) Сканирай QR с <b>вградения</b> скенер в MetaMask (иконата горе вдясно).</p>
+
+  <div class="card">
+    <button id="btn" class="btn">Генерирай QR</button>
+
+    <div id="qr" class="qrbox" style="display:none;">
+      <img id="qrimg" alt="QR" style="width:100%;height:100%;object-fit:contain"/>
     </div>
+
+    <div id="conn" style="margin-top:12px;display:none;">
+      <div class="status-ok">Свързано</div>
+      <div style="margin-top:8px;">
+        <div class="row" style="margin:6px 0;">
+          <div>Адрес:</div>
+          <div id="addr" class="pill mono">—</div>
+        </div>
+        <div class="row" style="margin:6px 0;">
+          <div>Мрежа:</div>
+          <div id="net" class="pill">—</div>
+        </div>
+        <button id="cpy" class="btn" style="margin-top:10px;">Копирай адрес</button>
+      </div>
+      <div style="margin-top:10px;font-size:12px;opacity:.7;">Topic: <span id="topic" class="mono"></span></div>
+    </div>
+
+    <div id="msg" style="margin-top:10px;color:#f87171;"></div>
   </div>
+</div>
 
-  <script>
-    const btn=document.getElementById("btn"),qrDiv=document.getElementById("qr"),statusEl=document.getElementById("status"),resultEl=document.getElementById("result");
-    const base=""; let poll=null; const stop=()=>{ if(poll){clearInterval(poll); poll=null;} };
+<script>
+const $ = (id)=>document.getElementById(id);
+let pollTimer=null, currentId=null;
 
-    async function copy(text){
-      try{ await navigator.clipboard.writeText(text); alert("Адресът е копиран."); }catch{}
+function mask(addr){
+  if(!addr) return "—";
+  return addr.slice(0,6)+"…"+addr.slice(-4);
+}
+
+async function start(){
+  $("msg").textContent="";
+  $("conn").style.display="none";
+  $("qr").style.display="none";
+
+  try{
+    const r = await fetch("/wc-uri");
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || r.statusText);
+
+    currentId = data.id;
+    const img = "https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=" + encodeURIComponent(data.uri);
+    $("qrimg").src = img;
+    $("qr").style.display="block";
+
+    if(pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(check, 1000);
+  }catch(e){
+    $("msg").textContent = "Грешка: " + (e.message||e);
+  }
+}
+
+async function check(){
+  try{
+    const r = await fetch(`/wc-status?id=${encodeURIComponent(currentId||"")}`);
+    const d = await r.json();
+    if(d.status==="approved"){
+      if(pollTimer) { clearInterval(pollTimer); pollTimer=null; }
+      $("conn").style.display="block";
+      $("addr").textContent = mask(d.address);
+      $("net").textContent  = d.networkName || `eip155:${d.chainId}`;
+      $("topic").textContent= d.topic || "";
+    }else if(d.status==="expired" || d.status==="not_found"){
+      if(pollTimer) { clearInterval(pollTimer); pollTimer=null; }
+      $("msg").textContent = "Сесията изтече – генерирай нов QR.";
     }
+  }catch(e){
+    // тихо – продължаваме да poll-ваме
+  }
+}
 
-    btn.addEventListener("click", async ()=>{
-      stop(); qrDiv.innerHTML=""; statusEl.textContent="Създаване на сесия..."; statusEl.className="stat"; resultEl.textContent="";
-      try{
-        const r=await fetch(base+"/wc-uri");
-        if(!r.ok){ const t=await r.text().catch(()=> ""); statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`; if(t) resultEl.innerHTML=`<code>${t.slice(0,400)}</code>`; return; }
-        const {id,uri,expiresAt}=await r.json();
-
-        const bg="14171b", fg="ffffff";
-        const img=`https://api.qrserver.com/v1/create-qr-code/?size=400x400&bgcolor=${bg}&color=${fg}&data=${encodeURIComponent(uri)}`;
-        qrDiv.innerHTML=`<img src="${img}" alt="WalletConnect QR">`;
-        statusEl.innerHTML=`Статус: <b>pending</b> (валиден до <code>${expiresAt}</code>)`;
-
-        poll=setInterval(async ()=>{
-          const s=await fetch(base+`/wc-status?id=${encodeURIComponent(id)}`).then(x=>x.json());
-          if(s.status==="approved"){
-            stop();
-            statusEl.innerHTML=`<span class="ok">Свързано</span>`;
-            const short = (a)=> a ? a.slice(0,6)+"…"+a.slice(-4) : "";
-            resultEl.innerHTML = `
-              <div class="cols"><div>Адрес:</div><div class="pill">${short(s.address || "")}</div></div>
-              <div class="cols"><div>Мрежа:</div><div class="pill">${s.networkName || ("eip155:"+s.chainId)}</div></div>
-              <div style="margin-top:8px"><button id="cp">Копирай адрес</button></div>
-              <div style="margin-top:8px"><small>Topic: <code>${s.topic}</code></small></div>
-            `;
-            document.getElementById("cp").onclick=()=>copy(s.address||"");
-          } else if (s.status==="expired"){
-            stop(); statusEl.innerHTML=`<span class="error">Статус: expired</span> — генерирай нов QR.`;
-          } else if (s.status==="not_found"){
-            statusEl.innerHTML=`<span class="error">Статус: not_found</span>`;
-          } else {
-            statusEl.innerHTML=`Статус: <b>pending</b> — одобри в MetaMask`;
-          }
-        }, 2000);
-      }catch(e){
-        statusEl.innerHTML=`<span class="error">Грешка при /wc-uri</span>`;
-        resultEl.textContent=String(e);
-      }
-    });
-  </script>
+$("btn").onclick = start;
+$("cpy").onclick = ()=> {
+  const txt = $("addr").textContent;
+  navigator.clipboard.writeText(txt.replace("…","")).catch(()=>{});
+};
+</script>
 </body>
 </html>
