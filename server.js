@@ -48,7 +48,6 @@ async function loadSignClient() {
 
   if (!Candidate) throw new Error("WalletConnect SignClient export not recognized");
 
-  // Единна фабрика – връща инстанция независимо дали е static init или constructor
   SignClientFactory = async (opts) => {
     if (typeof Candidate.init === "function") return Candidate.init(opts);
     const instance = new Candidate(opts);
@@ -69,7 +68,7 @@ async function getSignClient() {
     metadata: {
       name: "3DHome4U Login",
       description: "Login via WalletConnect / MetaMask",
-      url: "https://wc-backend-tpug.onrender.com", // домейн от Allowlist
+      url: "https://wc-backend-tpug.onrender.com",
       icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
     }
   });
@@ -77,7 +76,7 @@ async function getSignClient() {
 }
 
 // ── in-memory store + TTL ─────────────────────────────────────────────────────
-const PENDING_TTL_MS = 10 * 60 * 1000; // 10 мин за по-устойчиво поведение
+const PENDING_TTL_MS = 10 * 60 * 1000; // 10 мин
 const pendings = new Map();
 setInterval(() => {
   const now = Date.now();
@@ -99,19 +98,8 @@ function toApprovalPromise(maybeFnOrPromise) {
     return Promise.reject(e);
   }
 }
-
 function chainIdToName(id) {
-  const map = {
-    1: "Ethereum Mainnet",
-    5: "Goerli (deprecated)",
-    10: "Optimism",
-    25: "Cronos",
-    56: "BNB Chain",
-    137: "Polygon",
-    338: "Cronos Testnet",
-    42161: "Arbitrum One",
-    43114: "Avalanche C-Chain"
-  };
+  const map = { 1: "Ethereum Mainnet", 137: "Polygon", 56: "BNB Chain", 42161: "Arbitrum One", 43114: "Avalanche", 25: "Cronos", 338: "Cronos Testnet" };
   return map[id] || `eip155:${id}`;
 }
 
@@ -120,23 +108,16 @@ app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    // Минимално изискан chain – ETH mainnet; останалите са optional
+    // МИНИМАЛНА заявка → няма да гърми валидатора
     const requiredNamespaces = {
       eip155: {
-        methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
-        chains: ["eip155:1"],
-        events: ["chainChanged","accountsChanged"]
-      }
-    };
-    const optionalNamespaces = {
-      eip155: {
-        chains: ["eip155:137","eip155:25","eip155:338"],
-        methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
-        events: ["chainChanged","accountsChanged"]
+        methods: ["personal_sign"],   // само най-поддържания метод
+        chains: ["eip155:1"],         // само ETH mainnet
+        events: ["accountsChanged","chainChanged"]
       }
     };
 
-    const connectRes = await client.connect({ requiredNamespaces, optionalNamespaces });
+    const connectRes = await client.connect({ requiredNamespaces });
     const wcUri = connectRes.uri;
     const approvalRaw = connectRes.approval;
 
@@ -149,19 +130,23 @@ app.get("/wc-uri", async (_req, res) => {
     row.approval = approvalPromise;
 
     approvalPromise.then((session) => {
-      const ns = session?.namespaces?.eip155;
-      const first = ns?.accounts?.[0] || "";
-      const [_, chainIdStr, address] = first.split(":");
-      const chainId = Number(chainIdStr || 0);
-      console.log("[WC APPROVED]", session.topic, ns?.accounts);
-      row.session = {
-        topic: session.topic,
-        addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
-        chains: ns?.chains || [],
-        address: address || null,
-        chainId,
-        networkName: chainIdToName(chainId)
-      };
+      try {
+        const ns = session?.namespaces?.eip155;
+        const first = ns?.accounts?.[0] || "";
+        const [_, chainIdStr, address] = first.split(":");
+        const chainId = Number(chainIdStr || 0);
+        console.log("[WC APPROVED]", session.topic, ns?.accounts);
+        row.session = {
+          topic: session.topic,
+          addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
+          chains: ns?.chains || [],
+          address: address || null,
+          chainId,
+          networkName: chainIdToName(chainId)
+        };
+      } catch (e) {
+        console.warn("[WC APPROVED PARSE ERROR]", e?.message || e);
+      }
     }).catch((e) => {
       console.warn("[WC APPROVAL REJECTED]", e?.message || e);
     });
@@ -178,7 +163,6 @@ app.get("/wc-uri", async (_req, res) => {
 app.get("/wc-status", async (req, res) => {
   const { id } = req.query;
 
-  // Нормален път – имаме pending запис
   if (id && pendings.has(id)) {
     const row = pendings.get(id);
     const expired = Date.now() - row.createdAt > PENDING_TTL_MS;
@@ -187,7 +171,7 @@ app.get("/wc-status", async (req, res) => {
     return res.json({ status: "pending" });
   }
 
-  // Fallback: няма такъв id → опитай да върнеш активна сесия от SignClient
+  // fallback за след рестарт: върни първата активна сесия от клиента
   try {
     const client = await getSignClient();
     const all = client?.session?.getAll ? client.session.getAll() : [];
