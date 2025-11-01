@@ -38,9 +38,7 @@ async function loadSignClient() {
   let mod = null, mode = "esm";
   try { mod = await import("@walletconnect/sign-client"); }
   catch { mode = "cjs"; mod = require("@walletconnect/sign-client"); }
-
-  const keys = Object.keys(mod || {});
-  console.log(`[WC IMPORT] mode=${mode}, keys=${JSON.stringify(keys)}`);
+  console.log("[WC IMPORT] mode=", mode, "keys=", Object.keys(mod || {}));
 
   const Candidate =
     mod?.default?.init ? mod.default :
@@ -48,16 +46,13 @@ async function loadSignClient() {
     (typeof mod?.default === "function" ? mod.default :
      typeof mod?.SignClient === "function" ? mod.SignClient : null);
 
-  if (!Candidate) {
-    throw new Error(`WalletConnect SignClient export not recognized. mode=${mode}, keys=${JSON.stringify(keys)}`);
-  }
+  if (!Candidate) throw new Error("WalletConnect SignClient export not recognized");
 
+  // Единна фабрика – връща инстанция независимо дали е static init или constructor
   SignClientFactory = async (opts) => {
-    if (typeof Candidate.init === "function") return Candidate.init(opts); // static init
-    const instance = new Candidate(opts);                                  // constructor
-    if (!instance || typeof instance.connect !== "function") {
-      throw new Error("Constructed SignClient has no .connect()");
-    }
+    if (typeof Candidate.init === "function") return Candidate.init(opts);
+    const instance = new Candidate(opts);
+    if (!instance || typeof instance.connect !== "function") throw new Error("Constructed SignClient has no .connect()");
     return instance;
   };
   return SignClientFactory;
@@ -68,33 +63,28 @@ let signClient = null;
 async function getSignClient() {
   if (signClient) return signClient;
   const create = await loadSignClient();
-  try {
-    signClient = await create({
-      projectId: WC_PROJECT_ID,
-      relayUrl: RELAY_URL,
-      metadata: {
-        name: "3DHome4U Login",
-        description: "Login via WalletConnect / MetaMask",
-        url: "https://wc-backend-tpug.onrender.com", // домейнът трябва да е в Allowlist
-        icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
-      }
-    });
-  } catch (e) {
-    console.error("[WC INIT ERROR]", e?.message || e);
-    throw e;
-  }
+  signClient = await create({
+    projectId: WC_PROJECT_ID,
+    relayUrl: RELAY_URL,
+    metadata: {
+      name: "3DHome4U Login",
+      description: "Login via WalletConnect / MetaMask",
+      url: "https://wc-backend-tpug.onrender.com", // домейн от Allowlist
+      icons: ["https://raw.githubusercontent.com/walletconnect/walletconnect-assets/master/Icon/Blue%20(Default)/Icon.png"]
+    }
+  });
   return signClient;
 }
 
-// ── pending store с TTL ────────────────────────────────────────────────────────
-const PENDING_TTL_MS = 2 * 60 * 1000;
+// ── in-memory store + TTL ─────────────────────────────────────────────────────
+const PENDING_TTL_MS = 10 * 60 * 1000; // 10 мин за по-устойчиво поведение
 const pendings = new Map();
 setInterval(() => {
   const now = Date.now();
   for (const [id, row] of pendings) if (now - row.createdAt > PENDING_TTL_MS) pendings.delete(id);
-}, 30_000);
+}, 60_000);
 
-// ── помощник: нормализирай approval → Promise<session> ────────────────────────
+// ── помощници ─────────────────────────────────────────────────────────────────
 function toApprovalPromise(maybeFnOrPromise) {
   try {
     if (typeof maybeFnOrPromise === "function") {
@@ -110,12 +100,27 @@ function toApprovalPromise(maybeFnOrPromise) {
   }
 }
 
+function chainIdToName(id) {
+  const map = {
+    1: "Ethereum Mainnet",
+    5: "Goerli (deprecated)",
+    10: "Optimism",
+    25: "Cronos",
+    56: "BNB Chain",
+    137: "Polygon",
+    338: "Cronos Testnet",
+    42161: "Arbitrum One",
+    43114: "Avalanche C-Chain"
+  };
+  return map[id] || `eip155:${id}`;
+}
+
 // ── API: създай WalletConnect pairing ─────────────────────────────────────────
 app.get("/wc-uri", async (_req, res) => {
   try {
     const client = await getSignClient();
 
-    // Минимално изискан chain (ETH mainnet). Останалите като optional.
+    // Минимално изискан chain – ETH mainnet; останалите са optional
     const requiredNamespaces = {
       eip155: {
         methods: ["personal_sign","eth_sign","eth_signTypedData","eth_signTypedData_v4","eth_sendTransaction"],
@@ -131,7 +136,6 @@ app.get("/wc-uri", async (_req, res) => {
       }
     };
 
-    // !!! НЕ ПОВТАРЯМЕ ИМЕНАТА: wcUri и approvalRaw
     const connectRes = await client.connect({ requiredNamespaces, optionalNamespaces });
     const wcUri = connectRes.uri;
     const approvalRaw = connectRes.approval;
@@ -148,15 +152,19 @@ app.get("/wc-uri", async (_req, res) => {
       const ns = session?.namespaces?.eip155;
       const first = ns?.accounts?.[0] || "";
       const [_, chainIdStr, address] = first.split(":");
+      const chainId = Number(chainIdStr || 0);
       console.log("[WC APPROVED]", session.topic, ns?.accounts);
       row.session = {
         topic: session.topic,
         addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
         chains: ns?.chains || [],
         address: address || null,
-        chainId: Number(chainIdStr || 0)
+        chainId,
+        networkName: chainIdToName(chainId)
       };
-    }).catch(() => { /* отказ в уолета */ });
+    }).catch((e) => {
+      console.warn("[WC APPROVAL REJECTED]", e?.message || e);
+    });
 
     const expiresAt = new Date(createdAt + PENDING_TTL_MS).toISOString();
     res.json({ id, uri: wcUri, expiresAt });
@@ -167,16 +175,41 @@ app.get("/wc-uri", async (_req, res) => {
 });
 
 // ── API: провери статус ───────────────────────────────────────────────────────
-app.get("/wc-status", (req, res) => {
+app.get("/wc-status", async (req, res) => {
   const { id } = req.query;
-  if (!id || !pendings.has(id)) return res.json({ status: "not_found" });
 
-  const row = pendings.get(id);
-  const expired = Date.now() - row.createdAt > PENDING_TTL_MS;
+  // Нормален път – имаме pending запис
+  if (id && pendings.has(id)) {
+    const row = pendings.get(id);
+    const expired = Date.now() - row.createdAt > PENDING_TTL_MS;
+    if (row.session) return res.json({ status: "approved", ...row.session });
+    if (expired) { pendings.delete(id); return res.json({ status: "expired" }); }
+    return res.json({ status: "pending" });
+  }
 
-  if (row.session) return res.json({ status: "approved", ...row.session });
-  if (expired) { pendings.delete(id); return res.json({ status: "expired" }); }
-  return res.json({ status: "pending" });
+  // Fallback: няма такъв id → опитай да върнеш активна сесия от SignClient
+  try {
+    const client = await getSignClient();
+    const all = client?.session?.getAll ? client.session.getAll() : [];
+    if (Array.isArray(all) && all.length > 0) {
+      const s = all[0];
+      const ns = s.namespaces?.eip155;
+      const first = ns?.accounts?.[0] || "";
+      const [__, chainIdStr, address] = first.split(":");
+      const chainId = Number(chainIdStr || 0);
+      return res.json({
+        status: "approved",
+        topic: s.topic,
+        addresses: (ns?.accounts || []).map(a => a.split(":")[2]),
+        chains: ns?.chains || [],
+        address: address || null,
+        chainId,
+        networkName: chainIdToName(chainId)
+      });
+    }
+  } catch (_) { /* ignore */ }
+
+  return res.json({ status: "not_found" });
 });
 
 // ── статични файлове ───────────────────────────────────────────────────────────
