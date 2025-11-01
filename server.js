@@ -3,252 +3,223 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import SignClient from "@walletconnect/sign-client";
 
-// ---------- базова конфигурация ----------
+// ---------- Helpers ----------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = process.env.PORT || 10000;
-const WC_PROJECT_ID =
-  process.env.WC_PROJECT_ID ||
-  // постави си реалния projectId тук, ако не го подаваш през env
-  "YOUR_WALLETCONNECT_PROJECT_ID";
-
-if (!WC_PROJECT_ID || WC_PROJECT_ID === "YOUR_WALLETCONNECT_PROJECT_ID") {
-  console.warn(
-    "[WARN] WC_PROJECT_ID не е зададен. Сложи реален projectId от WalletConnect Cloud!"
-  );
+// WalletConnect SignClient – надежден импорт (default / named)
+let _SignClient = null;
+async function getSignClient() {
+  if (_SignClient) return _SignClient;
+  const mod = await import("@walletconnect/sign-client");
+  _SignClient = mod?.default ?? mod;
+  if (typeof _SignClient?.init !== "function") {
+    throw new Error("SignClient.init not available (bad import)");
+  }
+  return _SignClient;
 }
 
+// Мап с активни заявки по topic
+const store = new Map(); // topic -> { client, approval, session }
+
+// Поддържани вериги и имена
+const CHAIN_NAME = {
+  1: "Ethereum Mainnet",
+  56: "BNB Chain",
+  97: "BNB Testnet",
+  137: "Polygon",
+  59144: "Linea",
+};
+
+// Изгражда requiredNamespaces за eip155
+function makeNamespaces(chainIds) {
+  const chains = chainIds.map((id) => `eip155:${id}`);
+  return {
+    eip155: {
+      methods: [
+        "eth_sendTransaction",
+        "eth_signTransaction",
+        "eth_sign",
+        "personal_sign",
+        "eth_signTypedData",
+        "eth_signTypedData_v4",
+      ],
+      chains,
+      events: ["accountsChanged", "chainChanged"],
+    },
+  };
+}
+
+// Чете адрес и chainId от сесията (eip155)
+function pickPrimary(session) {
+  const accs = session?.namespaces?.eip155?.accounts ?? [];
+  if (!accs.length) return { address: null, chainId: null };
+  // формат: 'eip155:<chainId>:<address>'
+  const [_, chainStr, addr] = accs[0].split(":");
+  return { address: addr, chainId: Number(chainStr) };
+}
+
+// ---------- App ----------
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Статични файлове от /public
-const publicDir = path.join(__dirname, "public");
-app.use(express.static(publicDir));
-app.get("/", (_req, res) => res.sendFile(path.join(publicDir, "index.html")));
+// сервирай фронта от /public
+app.use(express.static(path.join(__dirname, "public")));
 
-// ---------- WalletConnect ----------
-
-/** singleton на SignClient */
-let wcClient = null;
-
-/** тема -> запазена информация за сесията */
-const sessions = new Map();
-
-/** поддържани EIP-155 мрежи, които искаме при connect */
-const SUPPORTED_CHAINS = [
-  1, // Ethereum Mainnet
-  137, // Polygon
-  56, // BNB Chain
-  97, // BNB Testnet
-  59144, // Linea Mainnet
-];
-
-/** полезни имена за показване */
-const CHAIN_NAMES = {
-  1: "Ethereum Mainnet",
-  137: "Polygon",
-  56: "BNB Chain",
-  97: "BNB Testnet",
-  59144: "Linea",
-};
-
-const REQUIRED_METHODS = [
-  "eth_chainId",
-  "eth_accounts",
-  "personal_sign",
-  "eth_sendTransaction",
-  "eth_signTransaction",
-  "eth_signTypedData",
-  "wallet_switchEthereumChain",
-];
-const REQUIRED_EVENTS = ["accountsChanged", "chainChanged"];
-
-/** lazy init на SignClient */
-async function getSignClient() {
-  if (wcClient) return wcClient;
-
-  wcClient = await SignClient.init({
-    projectId: WC_PROJECT_ID,
-    // relayUrl: "wss://relay.walletconnect.com", // по подразбиране
-    metadata: {
-      name: "3DHome4U Login",
-      description: "WalletConnect / MetaMask login demo",
-      url: "https://3dhome4u.com",
-      icons: ["https://walletconnect.com/walletconnect-logo.png"],
-    },
-  });
-
-  console.log("[BOOT] SignClient готов.");
-  return wcClient;
-}
-
-/** извлича topic от wc-uri (формат wc:{topic}@2?... ) */
-function extractTopicFromUri(uri) {
-  const m = /^wc:([^@]+)@/i.exec(uri);
-  return m ? m[1] : undefined;
-}
-
-/** от session.namespaces взима 1) адреса за първия акаунт, 2) chainId на този акаунт */
-function pickActiveAccountAndChain(session) {
-  try {
-    const ns = session?.namespaces?.eip155;
-    const accounts = ns?.accounts || [];
-    if (!accounts.length) return {};
-
-    // eip155:{chainId}:{address}
-    const [_, chainIdStr, address] = accounts[0].split(":");
-    const chainId = Number(chainIdStr);
-    return { address, chainId, allAccounts: accounts };
-  } catch {
-    return {};
-  }
-}
-
-/** формат за фронтенда */
-function formatSessionForClient(session) {
-  const { address, chainId, allAccounts } = pickActiveAccountAndChain(session);
-  return {
-    ok: true,
-    topic: session.topic,
-    address,
-    addressShort: address
-      ? `${address.slice(0, 6)}...${address.slice(-4)}`
-      : undefined,
-    chainId,
-    chainName: chainId ? CHAIN_NAMES[chainId] || `eip155:${chainId}` : undefined,
-    allAccounts,
-  };
-}
-
-// ---------- API ----------
+// Health
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
 /**
  * GET /wc-uri
- * Създава нова pairing/връзка и връща wc-uri + topic.
+ * params:
+ * - chains: CSV от chainId (по умолчание 1,56,137,59144)
+ *
+ * Връща { ok, uri, topic }
  */
-app.get("/wc-uri", async (_req, res) => {
+app.get("/wc-uri", async (req, res) => {
   try {
-    const client = await getSignClient();
+    const SignClient = await getSignClient();
 
-    const requiredNamespaces = {
-      eip155: {
-        methods: REQUIRED_METHODS,
-        events: REQUIRED_EVENTS,
-        chains: SUPPORTED_CHAINS.map((id) => `eip155:${id}`),
+    const projectId =
+      process.env.WC_PROJECT_ID && process.env.WC_PROJECT_ID.trim()
+        ? process.env.WC_PROJECT_ID.trim()
+        : null;
+
+    if (!projectId) {
+      return res
+        .status(500)
+        .json({ ok: false, error: "Missing WC_PROJECT_ID env" });
+    }
+
+    const chainsParam = (req.query.chains ?? "").toString().trim();
+    const chainIds = (chainsParam
+      ? chainsParam.split(",")
+      : ["1", "56", "137", "59144"]
+    )
+      .map((s) => Number(s))
+      .filter((n) => !Number.isNaN(n));
+
+    const requiredNamespaces = makeNamespaces(chainIds);
+
+    const client = await SignClient.init({
+      projectId,
+      relayUrl: "wss://relay.walletconnect.com",
+      logger: "error",
+      metadata: {
+        name: "3DHome4U Login",
+        description: "Login via WalletConnect / MetaMask",
+        url: "https://3dhome4u.com",
+        icons: ["https://walletconnect.com/walletconnect-logo.png"],
       },
-    };
+    });
 
+    // Инициране на връзка
     const { uri, approval } = await client.connect({ requiredNamespaces });
 
     if (!uri) {
-      return res.status(500).json({ ok: false, error: "No URI from connect()" });
+      return res
+        .status(500)
+        .json({ ok: false, error: "No URI returned from connect()" });
     }
 
-    const topic = extractTopicFromUri(uri) || "";
+    // Вадим topic от URI (topic=<uuid>)
+    const topic =
+      new URL(uri).searchParams.get("topic") ||
+      (uri.match(/topic=([^&]+)/)?.[1] ?? null);
 
-    console.log(
-      `[WC IMPORT] chains= [ ${requiredNamespaces.eip155.chains
-        .map((c) => `'${c}'`)
-        .join(", ")} ]`
-    );
-    console.log(`[WC URI] ${topic}`);
+    if (!topic) {
+      return res
+        .status(500)
+        .json({ ok: false, error: "Cannot extract topic from URI" });
+    }
 
-    // изчакваме асинхронно одобрението, без да блокираме отговора към клиента
-    approval()
+    // Съхраняваме approval и клиента
+    store.set(topic, { client, approval, session: null });
+
+    // Когато има одобрение – пазим сесията
+    approval
       .then((session) => {
-        const info = formatSessionForClient(session);
-        sessions.set(session.topic, session);
-        console.log(
-          `[WC APPROVED] topic=${session.topic}  chainId: ${info.chainId}, address: ${info.address}`
-        );
+        const k = store.get(topic);
+        if (k) k.session = session;
       })
-      .catch((err) => {
-        console.error("[WC APPROVAL ERROR]", err?.message || err);
+      .catch(() => {
+        // rejected / timeout
+        store.delete(topic);
       });
 
     return res.json({ ok: true, uri, topic });
   } catch (err) {
-    console.error("[/wc-uri] ERROR:", err?.message || err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "Неуспешно /wc-uri", details: String(err) });
+    console.error("[/wc-uri] ERROR:", err);
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
 
 /**
- * GET /wc-status?topic=...
- * Връща информация за текущата сесия (адрес, мрежа).
+ * GET /status?topic=<topic>
+ * Връща:
+ *  - { state: "pending" } – докато чакаме approval
+ *  - { state: "connected", address, chainId, networkName }
+ *  - { state: "unknown" } – невалиден topic
  */
-app.get("/wc-status", async (req, res) => {
-  try {
-    const { topic } = req.query;
-    if (!topic) return res.json({ ok: false, error: "Missing topic" });
-
-    const session = sessions.get(String(topic));
-    if (!session) return res.json({ ok: false, error: "not_found" });
-
-    return res.json(formatSessionForClient(session));
-  } catch (err) {
-    console.error("[/wc-status] ERROR:", err?.message || err);
-    return res.status(500).json({ ok: false, error: "status_error" });
+app.get("/status", async (req, res) => {
+  const topic = (req.query.topic ?? "").toString();
+  if (!topic || !store.has(topic)) {
+    return res.json({ state: "unknown" });
   }
+
+  const entry = store.get(topic);
+
+  if (!entry.session) {
+    return res.json({ state: "pending" });
+  }
+
+  const { address, chainId } = pickPrimary(entry.session);
+  return res.json({
+    state: "connected",
+    address,
+    chainId,
+    networkName: CHAIN_NAME[chainId] || `eip155:${chainId}`,
+  });
 });
 
 /**
- * POST /wc-switch
- * body: { topic: string, chainId: number }
- * Изисква смяна на мрежата в портфейла (ако е одобрена).
+ * POST /disconnect { topic }
  */
-app.post("/wc-switch", async (req, res) => {
+app.post("/disconnect", async (req, res) => {
+  const { topic } = req.body || {};
+  const entry = topic && store.get(topic);
+  if (!entry) return res.json({ ok: true });
+
   try {
-    const { topic, chainId } = req.body || {};
-    if (!topic || !chainId) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Missing topic or chainId" });
+    if (entry.session) {
+      await entry.client.disconnect({
+        topic: entry.session.topic,
+        reason: { code: 6000, message: "User disconnected" },
+      });
     }
-
-    const client = await getSignClient();
-    const session = sessions.get(String(topic));
-    if (!session) return res.json({ ok: false, error: "not_found" });
-
-    const hexChain =
-      "0x" + Number(chainId).toString(16); // '0x89' за 137 и т.н.
-
-    // През WalletConnect v2 е нужна "routing chain" – използваме target chain-а.
-    await client.request({
-      topic: session.topic,
-      chainId: `eip155:${chainId}`,
-      request: {
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: hexChain }],
-      },
-    });
-
-    // обновяваме кеша (някои портфейли връщат нов "активен" chain на първа позиция)
-    const fresh = await client.session.get(session.topic);
-    sessions.set(session.topic, fresh);
-
-    return res.json(formatSessionForClient(fresh));
-  } catch (err) {
-    console.error("[/wc-switch] ERROR:", err?.message || err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "switch_error", details: String(err) });
+  } catch (_) {
+    // ignore
   }
+  store.delete(topic);
+  return res.json({ ok: true });
 });
 
-// ---------- старт ----------
+// Fallback към index.html (ако ползваш SPA във /public)
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// ---------- Start ----------
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Listening on :${PORT}`);
+  console.log("Listening on :", PORT);
   console.log("==> Your service is live 🎉");
-  console.log("==> ///////////////////////////////////////////////");
+  console.log("==> ////////////////////////////////////////////////");
   console.log(
-    `==> Available at your primary URL https://wc-backend-tpug.onrender.com`
+    "==>  Available at your primary URL",
+    process.env.RENDER_EXTERNAL_URL || "(set RENDER_EXTERNAL_URL)"
   );
-  console.log("==> ///////////////////////////////////////////////");
+  console.log("==> ////////////////////////////////////////////////");
 });
