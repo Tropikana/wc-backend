@@ -72,7 +72,16 @@ let signClient = null;
 async function getSignClient() {
   if (signClient) return signClient;
 
-  signClient = await SignClient.init({
+  // Някои версии на @walletconnect/sign-client експортират SignClient като default,
+  // други – като named export SignClient.SignClient. Вземаме каквото е налично.
+  const ClientCtor = SignClient?.SignClient || SignClient;
+  if (!ClientCtor || typeof ClientCtor.init !== "function") {
+    throw new Error(
+      "WalletConnect SignClient.init is not available – check @walletconnect/sign-client version"
+    );
+  }
+
+  signClient = await ClientCtor.init({
     projectId: WC_PROJECT_ID,
     relayUrl: RELAY_URL,
     metadata: {
@@ -104,8 +113,17 @@ async function getSignClient() {
     }
   });
 
+  signClient.on("session_delete", ({ topic }) => {
+    for (const [, row] of pendings) {
+      if (row.session?.topic === topic) {
+        row.session = null;
+      }
+    }
+  });
+
   return signClient;
 }
+
 
 /* ------------ Helpers / state ------------ */
 const PENDING_TTL_MS = 10 * 60 * 1000;
