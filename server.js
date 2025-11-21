@@ -362,6 +362,7 @@ const ALLOWED_METHODS = new Set([
 app.post("/wc-request", async (req, res) => {
   try {
     const { topic, method, params, chainRef } = req.body || {};
+
     if (!topic || typeof topic !== "string") {
       return res.status(400).json({ error: "Missing or invalid 'topic'." });
     }
@@ -372,27 +373,57 @@ app.post("/wc-request", async (req, res) => {
       return res.status(400).json({ error: "Invalid 'params' — must be an array." });
     }
 
-    const sess = getSessionByTopic(topic);
+    // Вземаме клиента (ще ни трябва и за lookup, и за request)
+    const client = await getSignClient();
+
+    // 1) Опитваме да намерим сесията в нашата локална памет (pendings)
+    let sess = getSessionByTopic(topic);
+
+    // 2) Ако я няма – fallback към WalletConnect store (session.getAll)
+    if (!sess && client?.session?.getAll) {
+      const all = client.session.getAll();
+      const s = Array.isArray(all) ? all.find((x) => x.topic === topic) : null;
+      if (s) {
+        const ns = s.namespaces?.eip155;
+        const picked = pickPreferred(ns, null);
+        sess = {
+          topic: s.topic,
+          addresses: (ns?.accounts || []).map((a) => parseAccount(a).address),
+          chains: ns?.chains || [],
+          address: picked.address || null,
+          chainId: picked.chainId,
+          networkName: chainIdToName(picked.chainId),
+          selectedChainRef: picked.chainRef,
+        };
+      }
+    }
+
     if (!sess) {
       return res.status(404).json({ error: "Session not found or not approved." });
     }
-    const effectiveChainRef = chainRef || sess.selectedChainRef || `eip155:${sess.chainId}`;
 
+    const effectiveChainRef =
+      chainRef || sess.selectedChainRef || `eip155:${sess.chainId}`;
+
+    // Допълнителни проверки за eth_sendTransaction
     if (method === "eth_sendTransaction") {
       const tx = params?.[0];
       if (!tx || typeof tx !== "object") {
-        return res.status(400).json({ error: "eth_sendTransaction expects params[0] tx object." });
+        return res
+          .status(400)
+          .json({ error: "eth_sendTransaction expects params[0] tx object." });
       }
       if (!tx.from) tx.from = sess.address;
       if (typeof tx.from !== "string") {
         return res.status(400).json({ error: "Invalid 'from' field in tx." });
       }
       if (tx.from.toLowerCase() !== (sess.address || "").toLowerCase()) {
-        return res.status(400).json({ error: "Transaction 'from' must match session address." });
+        return res
+          .status(400)
+          .json({ error: "Transaction 'from' must match session address." });
       }
     }
 
-    const client = await getSignClient();
     const result = await Promise.race([
       client.request({
         topic,
@@ -403,6 +434,14 @@ app.post("/wc-request", async (req, res) => {
         setTimeout(() => rej(new Error("WalletConnect request timed out")), 120_000)
       ),
     ]);
+
+    return res.json({ ok: true, result });
+  } catch (e) {
+    console.error("wc-request error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 
     return res.json({ ok: true, result });
   } catch (e) {
