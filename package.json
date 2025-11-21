@@ -1,6 +1,6 @@
 {
   "name": "wc-login-demo",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "type": "module",
   "private": true,
   "scripts": {
@@ -13,6 +13,8 @@
     "@walletconnect/sign-client": "^2.11.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "ethers": "^6.11.0",
+    "dotenv": "^16.4.0"
   }
 }
