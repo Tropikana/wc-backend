@@ -1,208 +1,590 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="bg">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Влизане с WalletConnect / MetaMask</title>
+  <meta charset="UTF-8" />
+  <title>WC Backend – Test Console</title>
   <style>
-    :root { --bg:#0f1215; --panel:#171a1f; --text:#e8eef7; --muted:#9fb0c3; --ok:#3ddc97; --chip:#212733; --chipText:#cfe1ff; --btn:#2a66ff; --btnText:#fff; --err:#ff6b6b; }
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu}
-    .wrap{max-width:980px;margin:36px auto;padding:0 16px}
-    h1{margin:0 0 18px}
-    .card{background:var(--panel);border-radius:16px;padding:22px 22px 26px;box-shadow:0 10px 30px rgba(0,0,0,25)}
-    .row{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
-    .qr{width:360px;min-height:360px;border-radius:10px;background:#0a0d10;display:flex;align-items:center;justify-content:center}
-    .qr img{width:100%;height:auto;border-radius:10px}
-    .btn{background:var(--btn);color:var(--btnText);border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
-    .btn:disabled{opacity:.6;cursor:not-allowed}
-    .badge{display:inline-block;background:var(--chip);color:var(--chipText);padding:6px 10px;border-radius:999px;font-size:13px;margin-left:8px}
-    .ok{color:var(--ok)}
-    .muted{color:var(--muted)}
-    .err{color:var(--err)}
-    .grid{display:grid;grid-template-columns:auto 1fr;gap:10px 14px;margin-top:14px}
-    .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-    .chip{background:var(--chip);color:var(--chipText);padding:6px 10px;border-radius:999px;font-size:13px}
-    .chip .mini{margin-left:8px;background:#1f6fff;color:#fff;border:none;border-radius:8px;padding:2px 6px;cursor:pointer}
-    small{user-select:all}
-    .row-top{display:flex;gap:10px;align-items:center;margin-bottom:10px}
-    select{background:#0a0d10;color:#e8eef7;border:1px solid #2a3344;border-radius:10px;padding:9px 12px}
+    body {
+      font-family: Arial, sans-serif;
+      background: #0e1013;
+      color: #f5f5f5;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      padding: 16px 24px;
+      background: #171a1f;
+      border-bottom: 1px solid #282c34;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 20px;
+    }
+    main {
+      padding: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+    }
+    section {
+      background: #171a1f;
+      border: 1px solid #2a2f3a;
+      border-radius: 12px;
+      padding: 16px 18px;
+      flex: 1 1 380px;
+      box-sizing: border-box;
+    }
+    section h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+    label {
+      display: block;
+      margin: 6px 0 2px;
+      font-size: 13px;
+      color: #bbb;
+    }
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #444b57;
+      background: #0f1115;
+      color: #f5f5f5;
+      font-size: 13px;
+    }
+    input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+    }
+    button {
+      background: #2f81f7;
+      border: none;
+      color: white;
+      border-radius: 8px;
+      padding: 8px 14px;
+      margin-top: 10px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button.secondary {
+      background: #444b57;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .row > div {
+      flex: 1;
+      min-width: 140px;
+    }
+    .small {
+      font-size: 12px;
+      color: #aaa;
+    }
+    .status {
+      margin-top: 8px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: #2f81f7;
+      color: white;
+      margin-left: 4px;
+    }
+    #qr {
+      margin-top: 8px;
+      text-align: center;
+    }
+    #qr img {
+      max-width: 220px;
+      background: white;
+      padding: 8px;
+      border-radius: 8px;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 80px;
+      resize: vertical;
+      background: #0f1115;
+      color: #f5f5f5;
+      border-radius: 6px;
+      border: 1px solid #444b57;
+      font-size: 12px;
+      padding: 6px 8px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid #444b57;
+      font-size: 11px;
+      margin-right: 6px;
+      margin-top: 3px;
+    }
+    .pill span {
+      color: #2f81f7;
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Влизане с WalletConnect / MetaMask</h1>
-    <p class="muted">Избери мрежа, после генерирай QR и сканирай с <b>вградения</b> скенер на MetaMask.</p>
+<header>
+  <h1>WalletConnect Backend – тестова конзола <span class="badge">Sim Game Session</span></h1>
+</header>
 
-    <div class="card">
-      <div class="row-top">
-        <label for="chainSel" class="muted">Мрежа за логин:</label>
-        <select id="chainSel">
-          <option value="eip155:1">Ethereum Mainnet</option>
-          <option value="eip155:56" selected>BNB Chain</option>
-          <option value="eip155:97">BNB Testnet</option>
-          <option value="eip155:137">Polygon</option>
-          <option value="eip155:59144">Linea</option>
-          <option value="eip155:25">Cronos</option>
-          <option value="eip155:338">Cronos Testnet</option>
-          <option value="eip155:42161">Arbitrum One</option>
-          <option value="eip155:43114">Avalanche C-Chain</option>
-          <option value="eip155:8453">Base</option>
-        </select>
-        <button id="gen" class="btn">Генерирай QR</button>
+<main>
+  <!-- Настройки / API -->
+  <section>
+    <h2>1. Настройки</h2>
+    <label for="apiBase">API адрес на сървъра</label>
+    <input type="text" id="apiBase" />
+
+    <p class="small">
+      Ако отваряш тази страница от същия домейн като сървъра (Render), остави стойността както е.  
+      Ако тестваш локално, можеш да сложиш например <code>http://localhost:3000</code>.
+    </p>
+
+    <button id="btnSaveApi" class="secondary">Запази API адреса</button>
+
+    <div id="apiStatus" class="status"></div>
+  </section>
+
+  <!-- Логване с портфейл -->
+  <section>
+    <h2>2. Логване с портфейл (QR)</h2>
+
+    <label for="chainRef">Chain (eip155:<span class="small">например 137 за Polygon</span>)</label>
+    <input type="text" id="chainRef" value="eip155:137" />
+
+    <button id="btnGetQr">Генерирай QR за WalletConnect</button>
+
+    <div id="qr"></div>
+
+    <div class="status" id="wcStatus"></div>
+  </section>
+
+  <!-- Симулиране на игрово действие -->
+  <section>
+    <h2>3. Симулирай игрово действие (billing & on-chain)</h2>
+
+    <div class="small">
+      1) Избери действие и въведи параметри<br />
+      2) Натисни „Вземи цена“ → ще получиш колко native токен трябва да плати играчът<br />
+      3) „Плати“ → ще извика <code>eth_sendTransaction</code> към портфейла<br />
+      4) „Изпълни действие“ → сървърът ще минтне/изгори в съответния смарт договор
+    </div>
+
+    <label for="actionType">Действие (actionType)</label>
+    <select id="actionType">
+      <option value="RESOURCE_NFT_MINT">RESOURCE_NFT_MINT (минт ресурс)</option>
+      <option value="RESOURCE_NFT_BURN">RESOURCE_NFT_BURN (burn ресурс)</option>
+      <option value="CURRENCY_MINT">CURRENCY_MINT (минт валута)</option>
+      <option value="CURRENCY_BURN">CURRENCY_BURN (burn валута)</option>
+      <option value="LAND_NFT_MINT">LAND_NFT_MINT (минт парцел)</option>
+      <option value="PARCEL_ACTIVATE_BUILDING">PARCEL_ACTIVATE_BUILDING (строеж/активиране)</option>
+      <option value="PARCEL_SET_BUILDING_ACTIVE">PARCEL_SET_BUILDING_ACTIVE (on/off сграда)</option>
+    </select>
+
+    <!-- Полета за детайли (динамично спрямо actionType) -->
+    <div id="detailsFields" style="margin-top: 10px;"></div>
+
+    <div class="row" style="margin-top: 10px;">
+      <div>
+        <button id="btnQuote" class="secondary">1) Вземи цена</button>
       </div>
-
-      <div class="row">
-        <div>
-          <div class="qr" id="qrBox"><span class="muted">Чакам да генерираш QR…</span></div>
-        </div>
-
-        <div style="min-width:280px;flex:1">
-          <div class="grid" style="margin-top:12px">
-            <div>Статус:</div>
-            <div><b id="st" class="muted">—</b></div>
-
-            <div>Адрес:</div>
-            <div><span id="addrBadge" class="badge">—</span></div>
-
-            <div>Мрежа:</div>
-            <div><span id="netBadge" class="badge">—</span></div>
-
-            <div>Баланс:</div>
-            <div><span id="balBadge" class="badge">—</span>
-              <button id="balBtn" class="btn" style="margin-left:8px" disabled>Покажи баланс</button>
-            </div>
-          </div>
-
-          <div class="chips" id="chains"></div>
-
-          <div style="margin-top:14px">
-            <button id="copy" class="btn" disabled>Копирай адрес</button>
-          </div>
-
-          <div class="muted" style="margin-top:12px">Topic: <small id="topic">—</small></div>
-        </div>
+      <div>
+        <button id="btnPay" class="secondary" disabled>2) Плати</button>
+      </div>
+      <div>
+        <button id="btnComplete" disabled>3) Изпълни действие</button>
       </div>
     </div>
-  </div>
+
+    <div style="margin-top: 8px;">
+      <div class="pill">Цена: <span id="priceEther">–</span> native</div>
+      <div class="pill">Treasury: <span id="priceTreasury">–</span></div>
+    </div>
+
+    <div class="status" id="billingStatus"></div>
+  </section>
+
+  <!-- Логове -->
+  <section>
+    <h2>4. Лог</h2>
+    <textarea id="log" readonly></textarea>
+    <button id="btnClearLog" class="secondary">Изчисти лог</button>
+  </section>
+</main>
 
 <script>
-const API = new URLSearchParams(location.search).get("api") || "";
-const $ = s => document.querySelector(s);
+  // ---------- Помощни ----------
+  const $ = (id) => document.getElementById(id);
 
-const chainSel= $("#chainSel");
-const genBtn  = $("#gen");
-const qrBox   = $("#qrBox");
-const stEl    = $("#st");
-const addrB   = $("#addrBadge");
-const netB    = $("#netBadge");
-const balB    = $("#balBadge");
-const balBtn  = $("#balBtn");
-const copyB   = $("#copy");
-const topicEl = $("#topic");
-const chainsEl= $("#chains");
+  function logLine(msg) {
+    const area = $("log");
+    const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+    area.value += `[${ts}] ${msg}\n`;
+    area.scrollTop = area.scrollHeight;
+  }
 
-let currId=null, pollTimer=null, lastTopic=null, lastChainRef=null, lastAddress=null;
+  function setStatus(id, msg) {
+    $(id).textContent = msg;
+    if (msg) logLine(msg);
+  }
 
-function shortAddr(a){ return a ? (a.slice(0,6)+"..."+a.slice(-4)) : "—"; }
-function chainNameFromRef(ref){
-  const id = Number(String(ref).split(":")[1]||0);
-  const map = {1:"Ethereum Mainnet",56:"BNB Chain",97:"BNB Testnet",137:"Polygon",59144:"Linea",25:"Cronos",338:"Cronos Testnet",42161:"Arbitrum One",43114:"Avalanche C-Chain",8453:"Base"};
-  return map[id] || ref;
-}
-function setQR(uri){
-  const img = document.createElement("img");
-  img.alt = "QR";
-  img.src = "https://api.qrserver.com/v1/create-qr-code/?size=360x360&data="+encodeURIComponent(uri);
-  qrBox.innerHTML=""; qrBox.appendChild(img);
-}
-function renderStatus(data){
-  if (data.status === "approved"){
-    stEl.textContent = "Свързано"; stEl.className = "ok";
-    const addr = data.address || (data.addresses?.[0] || "");
-    addrB.textContent = shortAddr(addr);
-    netB.textContent  = data.networkName || "—";
-    copyB.disabled = !addr;
-    topicEl.textContent = data.topic || "—";
-    lastTopic = data.topic || null;
-    lastAddress = addr || null;
+  // ---------- Настройки ----------
+  const apiInput = $("apiBase");
+  const apiStatus = $("apiStatus");
+  const defaultApi = window.location.origin;
 
-    // !!! важен момент: използваме selectedChainRef от сървъра
-    lastChainRef = data.selectedChainRef || chainSel.value;
-    balBtn.disabled = !(lastAddress && lastChainRef);
+  apiInput.value = localStorage.getItem("wc_api_base") || defaultApi;
 
-    chainsEl.innerHTML = "";
-    (data.chains||[]).forEach(ref=>{
-      const chip = document.createElement("span");
-      chip.className="chip";
-      chip.textContent = chainNameFromRef(ref);
-      const btn = document.createElement("button");
-      btn.className="mini"; btn.textContent="Switch";
-      btn.onclick = async () => {
-        if (!lastTopic) return;
-        btn.disabled = true;
-        try{
-          await fetch(API + "/wc-switch", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ topic: lastTopic, chainRef: ref }) });
-          setTimeout(()=>{ if(currId) pollOnce(); else pollOnceDirect(); }, 1200);
-        }finally{ btn.disabled=false; }
+  $("btnSaveApi").onclick = () => {
+    const v = apiInput.value.trim();
+    if (!v) {
+      apiStatus.textContent = "Моля, въведи валиден API адрес.";
+      return;
+    }
+    localStorage.setItem("wc_api_base", v);
+    apiStatus.textContent = "Записано.";
+    logLine(`API base set to ${v}`);
+  };
+
+  function apiBase() {
+    return apiInput.value.trim() || defaultApi;
+  }
+
+  // ---------- WalletConnect логика ----------
+  let wcPendingId = null;
+  let wcSession = null;
+  let wcPollTimer = null;
+  let lastQuote = null;
+  let lastPaymentTxHash = null;
+
+  function clearWcSession() {
+    wcPendingId = null;
+    wcSession = null;
+    if (wcPollTimer) {
+      clearInterval(wcPollTimer);
+      wcPollTimer = null;
+    }
+    $("wcStatus").textContent = "Няма активна сесия.";
+    $("qr").innerHTML = "";
+  }
+
+  clearWcSession();
+
+  $("btnGetQr").onclick = async () => {
+    try {
+      clearWcSession();
+
+      const chainRef = $("chainRef").value.trim() || "eip155:137";
+      const url = apiBase() + "/wc-uri?chain=" + encodeURIComponent(chainRef);
+
+      setStatus("wcStatus", "Създаване на WC сесия...");
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+
+      wcPendingId = data.id;
+      setStatus(
+        "wcStatus",
+        "Сесия създадена. Сканирай QR кода с MetaMask / друго WC приложение."
+      );
+
+      // Показваме QR за uri-то
+      const uriEncoded = encodeURIComponent(data.uri);
+      $("qr").innerHTML =
+        '<img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' +
+        uriEncoded +
+        '" alt="WC QR" />';
+
+      // Периодично пита /wc-status
+      wcPollTimer = setInterval(checkWcStatus, 1500);
+    } catch (e) {
+      setStatus("wcStatus", "Грешка при генериране на WC URI: " + e.message);
+    }
+  };
+
+  async function checkWcStatus() {
+    if (!wcPendingId) return;
+    try {
+      const url =
+        apiBase() + "/wc-status?id=" + encodeURIComponent(wcPendingId);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+
+      if (data.status === "approved") {
+        wcSession = {
+          topic: data.topic,
+          address: data.address,
+          chainRef: data.selectedChainRef,
+          chainId: data.chainId,
+        };
+        clearInterval(wcPollTimer);
+        wcPollTimer = null;
+        $("wcStatus").textContent =
+          "Свързано: " +
+          wcSession.address +
+          " @ " +
+          (data.networkName || wcSession.chainRef);
+        logLine(
+          "WC session approved for " +
+            wcSession.address +
+            " on " +
+            wcSession.chainRef
+        );
+      } else if (data.status === "expired") {
+        clearWcSession();
+        setStatus("wcStatus", "Сесията изтече. Генерирай нов QR.");
+      } else if (data.status === "pending") {
+        // още чакаме
+      } else {
+        // not_found
+        clearWcSession();
+        setStatus("wcStatus", "Сесията не е намерена.");
+      }
+    } catch (e) {
+      setStatus("wcStatus", "Грешка при проверка на статус: " + e.message);
+    }
+  }
+
+  // ---------- Детайли за действията (формата) ----------
+  const detailsDiv = $("detailsFields");
+  const actionSelect = $("actionType");
+
+  function renderDetailsFields() {
+    const type = actionSelect.value;
+    let html = "";
+
+    if (type.startsWith("RESOURCE_NFT_")) {
+      html += `
+        <label>resourceId</label>
+        <input type="number" id="detail_resourceId" value="1" min="1" />
+        <label>amount</label>
+        <input type="number" id="detail_amount" value="1" min="1" />
+      `;
+    } else if (type.startsWith("CURRENCY_")) {
+      html += `
+        <label>amount (цяло число токени)</label>
+        <input type="number" id="detail_amount" value="10" min="1" />
+      `;
+    } else if (type === "LAND_NFT_MINT") {
+      html += `
+        <label>tokenId (ID на парцела)</label>
+        <input type="number" id="detail_tokenId" value="1" min="1" />
+      `;
+    } else if (type === "PARCEL_ACTIVATE_BUILDING") {
+      html += `
+        <label>landId</label>
+        <input type="number" id="detail_landId" value="1" min="1" />
+        <label>buildingType (0..5)</label>
+        <input type="number" id="detail_buildingType" value="0" min="0" max="5" />
+      `;
+    } else if (type === "PARCEL_SET_BUILDING_ACTIVE") {
+      html += `
+        <label>landId</label>
+        <input type="number" id="detail_landId" value="1" min="1" />
+        <label>buildingType (0..5)</label>
+        <input type="number" id="detail_buildingType" value="0" min="0" max="5" />
+        <label>
+          <input type="checkbox" id="detail_active" checked />
+          active (отметнато = включена сграда)
+        </label>
+      `;
+    }
+
+    detailsDiv.innerHTML = html;
+  }
+
+  actionSelect.addEventListener("change", () => {
+    renderDetailsFields();
+    lastQuote = null;
+    lastPaymentTxHash = null;
+    $("priceEther").textContent = "–";
+    $("priceTreasury").textContent = "–";
+    $("btnPay").disabled = true;
+    $("btnComplete").disabled = true;
+  });
+
+  renderDetailsFields();
+
+  // ---------- Billing flow ----------
+  $("btnQuote").onclick = async () => {
+    try {
+      const actionType = actionSelect.value;
+      const url =
+        apiBase() +
+        "/billing/quote?actionType=" +
+        encodeURIComponent(actionType);
+      setStatus("billingStatus", "Заявка за цена...");
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || "HTTP " + resp.status);
+      }
+
+      lastQuote = data;
+      lastPaymentTxHash = null;
+      $("priceEther").textContent = data.priceEther;
+      $("priceTreasury").textContent = data.treasury;
+      $("btnPay").disabled = !wcSession;
+      $("btnComplete").disabled = true;
+
+      setStatus(
+        "billingStatus",
+        "Цена за " +
+          actionType +
+          " = " +
+          data.priceEther +
+          " (wei: " +
+          data.priceWei +
+          ")"
+      );
+    } catch (e) {
+      setStatus("billingStatus", "Грешка при /billing/quote: " + e.message);
+    }
+  };
+
+  $("btnPay").onclick = async () => {
+    try {
+      if (!wcSession) {
+        return setStatus("billingStatus", "Няма активна WC сесия.");
+      }
+      if (!lastQuote) {
+        return setStatus(
+          "billingStatus",
+          "Първо вземи цена с бутона „Вземи цена“."
+        );
+      }
+
+      const tx = {
+        to: lastQuote.treasury,
+        value: lastQuote.priceWei, // hex от сървъра
       };
-      chip.appendChild(btn);
-      chainsEl.appendChild(chip);
-    });
-  } else if (data.status === "pending"){
-    stEl.textContent = "Очаква потвърждение…"; stEl.className = "";
-  } else if (data.status === "expired"){
-    stEl.textContent = "Изтекло – генерирай нов QR."; stEl.className = "err";
-  } else {
-    stEl.textContent = "not_found"; stEl.className = "err";
-  }
-}
-async function pollOnce(){
-  const r = await fetch(API + "/wc-status?id="+encodeURIComponent(currId));
-  renderStatus(await r.json());
-}
-async function pollOnceDirect(){
-  const r = await fetch(API + "/wc-status");
-  renderStatus(await r.json());
-}
-function startPolling(){ clearInterval(pollTimer); pollTimer = setInterval(pollOnce, 2000); }
 
-genBtn.onclick = async ()=>{
-  genBtn.disabled = true;
-  try{
-    stEl.textContent = "Генерирам…"; stEl.className = "muted";
-    const chain = chainSel.value;
-    const r = await fetch(API + "/wc-uri?chain="+encodeURIComponent(chain));
-    const data = await r.json();
-    if (!data.uri){ stEl.textContent="Грешка при /wc-uri"; stEl.className="err"; return; }
-    currId = data.id;
-    setQR(data.uri);
-    stEl.textContent = "Сканирай QR от MetaMask";
-    stEl.className = "";
-    startPolling();
-  }catch(e){
-    stEl.textContent = "Грешка"; stEl.className = "err";
-  }finally{
-    genBtn.disabled = false;
-  }
-};
+      const body = {
+        topic: wcSession.topic,
+        method: "eth_sendTransaction",
+        chainRef: wcSession.chainRef,
+        params: [tx],
+      };
 
-copyB.onclick = ()=>{ if (lastAddress) navigator.clipboard.writeText(lastAddress).catch(()=>{}); };
+      setStatus(
+        "billingStatus",
+        "Изпращане на плащането към портфейла (WC request)..."
+      );
+      const resp = await fetch(apiBase() + "/wc-request", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        throw new Error(data.error || "HTTP " + resp.status);
+      }
 
-balBtn.onclick = async ()=>{
-  if (!lastAddress || !lastChainRef) return;
-  balBtn.disabled = true;
-  try{
-    const r = await fetch(API + "/rpc-balance", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ chainRef: lastChainRef, address: lastAddress }) });
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
-    balB.textContent = data.balanceEther + " (≈ 18d)";
-  }catch(e){ balB.textContent = "Грешка"; }
-  finally{ balBtn.disabled = false; }
-};
+      const txHash = data.result;
+      lastPaymentTxHash = txHash;
+      $("btnComplete").disabled = false;
 
-// ако вече има сесия – покажи я
-pollOnceDirect();
-setInterval(()=>{ if(!currId) pollOnceDirect(); }, 5000);
+      setStatus(
+        "billingStatus",
+        "Плащането е изпратено. txHash=" + txHash + "\nЧакай да бъде mine-нато, после „Изпълни действие“."
+      );
+    } catch (e) {
+      setStatus("billingStatus", "Грешка при плащането: " + e.message);
+    }
+  };
+
+  $("btnComplete").onclick = async () => {
+    try {
+      if (!wcSession) {
+        return setStatus("billingStatus", "Няма активна WC сесия.");
+      }
+      if (!lastQuote || !lastPaymentTxHash) {
+        return setStatus(
+          "billingStatus",
+          "Няма запомнено плащане. Първо „Вземи цена“ и „Плати“."
+        );
+      }
+
+      const actionType = actionSelect.value;
+      const details = {};
+
+      // Събираме details според actionType
+      if (actionType.startsWith("RESOURCE_NFT_")) {
+        details.resourceId = parseInt($("detail_resourceId").value, 10);
+        details.amount = parseInt($("detail_amount").value, 10);
+      } else if (actionType.startsWith("CURRENCY_")) {
+        details.amount = parseInt($("detail_amount").value, 10);
+      } else if (actionType === "LAND_NFT_MINT") {
+        details.tokenId = parseInt($("detail_tokenId").value, 10);
+      } else if (actionType === "PARCEL_ACTIVATE_BUILDING") {
+        details.landId = parseInt($("detail_landId").value, 10);
+        details.buildingType = parseInt(
+          $("detail_buildingType").value,
+          10
+        );
+      } else if (actionType === "PARCEL_SET_BUILDING_ACTIVE") {
+        details.landId = parseInt($("detail_landId").value, 10);
+        details.buildingType = parseInt(
+          $("detail_buildingType").value,
+          10
+        );
+        details.active = $("detail_active").checked;
+      }
+
+      setStatus("billingStatus", "Изпълняване на действие в смарт договора...");
+
+      const body = {
+        actionType,
+        txHash: lastPaymentTxHash,
+        playerAddress: wcSession.address,
+        details,
+      };
+
+      const resp = await fetch(apiBase() + "/billing/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.error || "HTTP " + resp.status);
+      }
+
+      setStatus(
+        "billingStatus",
+        "Успех! paymentTx=" +
+          data.paymentTxHash +
+          " ; onchainTx=" +
+          data.onchainTxHash
+      );
+      $("btnComplete").disabled = true;
+    } catch (e) {
+      setStatus("billingStatus", "Грешка при /billing/complete: " + e.message);
+    }
+  };
+
+  $("btnClearLog").onclick = () => {
+    $("log").value = "";
+  };
 </script>
 </body>
 </html>
