@@ -359,6 +359,7 @@ const ALLOWED_METHODS = new Set([
   "eth_getBalance",
 ]);
 
+// ---- WC REQUEST: изпращане на eth_sendTransaction и други методи към портфейла ----
 app.post("/wc-request", async (req, res) => {
   try {
     const { topic, method, params, chainRef } = req.body || {};
@@ -373,13 +374,13 @@ app.post("/wc-request", async (req, res) => {
       return res.status(400).json({ error: "Invalid 'params' — must be an array." });
     }
 
-    // Вземаме клиента (ще ни трябва и за lookup, и за request)
+    // 1) Вземаме клиента
     const client = await getSignClient();
 
-    // 1) Опитваме да намерим сесията в нашата локална памет (pendings)
+    // 2) Първо търсим сесията в нашия локален map (pendings)
     let sess = getSessionByTopic(topic);
 
-    // 2) Ако я няма – fallback към WalletConnect store (session.getAll)
+    // 3) Ако не я намерим – fallback към store-а на WalletConnect
     if (!sess && client?.session?.getAll) {
       const all = client.session.getAll();
       const s = Array.isArray(all) ? all.find((x) => x.topic === topic) : null;
@@ -405,7 +406,7 @@ app.post("/wc-request", async (req, res) => {
     const effectiveChainRef =
       chainRef || sess.selectedChainRef || `eip155:${sess.chainId}`;
 
-    // Допълнителни проверки за eth_sendTransaction
+    // Допълнителни проверки при eth_sendTransaction
     if (method === "eth_sendTransaction") {
       const tx = params?.[0];
       if (!tx || typeof tx !== "object") {
@@ -434,14 +435,6 @@ app.post("/wc-request", async (req, res) => {
         setTimeout(() => rej(new Error("WalletConnect request timed out")), 120_000)
       ),
     ]);
-
-    return res.json({ ok: true, result });
-  } catch (e) {
-    console.error("wc-request error:", e);
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
-
 
     return res.json({ ok: true, result });
   } catch (e) {
