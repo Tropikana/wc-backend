@@ -27,7 +27,6 @@ function parseNativePrice(envName, defaultValue = "0") {
     return ethers.parseUnits(defaultValue, 18); // 0 по подразбиране
   }
   try {
-    // raw може да е "0.0001" и ще се парсне като 18-десетична стойност
     return ethers.parseUnits(raw, 18);
   } catch (e) {
     console.warn(`[billing] Could not parse ${envName}='${raw}':`, e);
@@ -39,21 +38,13 @@ function parseNativePrice(envName, defaultValue = "0") {
  * Конфигурация на цените за различните действия.
  *
  * В .env трябва да зададеш:
- *  - PRICE_NATIVE_ITEM_NFT          (примерно за предметни NFT)
- *  - PRICE_NATIVE_RESOURCE_NFT      (ресурсни NFT)
- *  - PRICE_NATIVE_CURRENCY          (валута)
- *  - PRICE_NATIVE_LAND              (минт на парцели LandNFT)
- *  - PRICE_NATIVE_PARCELSTATE       (ParcelState операции – строеж / on-off на сгради)
- *
- * Пример:
- *  PRICE_NATIVE_ITEM_NFT=0.0002
- *  PRICE_NATIVE_RESOURCE_NFT=0.00008
- *  PRICE_NATIVE_CURRENCY=0.00008
- *  PRICE_NATIVE_LAND=0.0005
- *  PRICE_NATIVE_PARCELSTATE=0.00005
+ *  - PRICE_NATIVE_ITEM_NFT
+ *  - PRICE_NATIVE_RESOURCE_NFT
+ *  - PRICE_NATIVE_CURRENCY
+ *  - PRICE_NATIVE_LAND
+ *  - PRICE_NATIVE_PARCELSTATE
  */
 const ACTION_CONFIG = {
-  // --------- ITEM NFT (ако по-късно ги отделим от ресурсите) ---------
   ITEM_NFT_MINT: {
     priceWei: parseNativePrice("PRICE_NATIVE_ITEM_NFT", "0"),
     kind: "ITEM",
@@ -65,7 +56,6 @@ const ACTION_CONFIG = {
     operation: "BURN",
   },
 
-  // --------- RESOURCE NFT (ResourceNFT ERC1155) ---------
   RESOURCE_NFT_MINT: {
     priceWei: parseNativePrice("PRICE_NATIVE_RESOURCE_NFT", "0"),
     kind: "RESOURCE",
@@ -77,7 +67,6 @@ const ACTION_CONFIG = {
     operation: "BURN",
   },
 
-  // --------- CURRENCY (GameCurrency ERC20) ---------
   CURRENCY_MINT: {
     priceWei: parseNativePrice("PRICE_NATIVE_CURRENCY", "0"),
     kind: "CURRENCY",
@@ -89,22 +78,17 @@ const ACTION_CONFIG = {
     operation: "BURN",
   },
 
-  // --------- LAND (LandNFT ERC721) ---------
-  // Минт на парцел към играча – LandNFT.mintLand(player, tokenId)
   LAND_NFT_MINT: {
     priceWei: parseNativePrice("PRICE_NATIVE_LAND", "0"),
     kind: "LAND",
     operation: "MINT",
   },
 
-  // --------- PARCEL STATE (ParcelState) ---------
-  // Строеж / активиране на сграда – ParcelState.activateBuilding(...)
   PARCEL_ACTIVATE_BUILDING: {
     priceWei: parseNativePrice("PRICE_NATIVE_PARCELSTATE", "0"),
     kind: "PARCEL",
     operation: "ACTIVATE_BUILDING",
   },
-  // Включване/изключване на вече построена сграда – ParcelState.setBuildingActive(...)
   PARCEL_SET_BUILDING_ACTIVE: {
     priceWei: parseNativePrice("PRICE_NATIVE_PARCELSTATE", "0"),
     kind: "PARCEL",
@@ -117,20 +101,11 @@ const usedPaymentTxs = new Set();
 
 /**
  * Регистрира маршрутите за биллинг върху подадения Express app.
- *
- * Поток:
- *  1) Unreal вика /billing/quote?actionType=RESOURCE_NFT_MINT
- *      -> получава priceWei, priceEther
- *  2) Unreal кара играча да плати тази сума към BILLING_TREASURY_ADDRESS
- *     през WalletConnect (eth_sendTransaction).
- *  3) След txHash, Unreal вика /billing/complete с:
- *      { actionType, txHash, playerAddress, details: {...} }
- *  4) Тук проверяваме плащането и правим съответното on-chain действие (mint/burn/...).
  */
 export function setupBillingRoutes(app) {
   console.log("[billing] Treasury address:", BILLING_TREASURY_ADDRESS);
 
-  // Дава цена за конкретен actionType
+  // -------- /billing/quote --------
   app.get("/billing/quote", (req, res) => {
     try {
       const actionType = String(req.query.actionType || "").trim();
@@ -159,7 +134,7 @@ export function setupBillingRoutes(app) {
     }
   });
 
-  // Финализира платена операция: проверява платен tx и прави on-chain действие
+  // -------- /billing/complete --------
   app.post("/billing/complete", async (req, res) => {
     try {
       const { actionType, txHash, playerAddress, details } = req.body || {};
@@ -191,16 +166,18 @@ export function setupBillingRoutes(app) {
         return res.status(400).json({ error: "Payment tx already used" });
       }
 
-      // Четем транзакцията и receipt-а
+      // 1) Четем транзакцията
       const tx = await provider.getTransaction(txHash);
       if (!tx) {
         return res.status(400).json({ error: "Payment transaction not found" });
       }
-      const receipt = await provider.getTransactionReceipt(txHash);
+
+      // 2) Чакаме да бъде mine-ната (1 потвърждение, безкраен timeout или можеш да сложиш 3-5 минути)
+      const receipt = await provider.waitForTransaction(txHash, 1);
       if (!receipt) {
         return res
           .status(400)
-          .json({ error: "Payment transaction not yet mined" });
+          .json({ error: "Timed out waiting for payment transaction" });
       }
       if (Number(receipt.status) !== 1) {
         return res.status(400).json({ error: "Payment transaction failed" });
@@ -231,10 +208,10 @@ export function setupBillingRoutes(app) {
       // Маркираме плащането като използвано (за да не се преизползва)
       usedPaymentTxs.add(txHash);
 
-      // Тук правим реалното действие според actionType
+      // 3) Реалното действие според actionType
       let onchainTx = null;
 
-      // RESOURCE / ITEM NFT през ResourceNFT
+      // RESOURCE / ITEM NFT
       if ((cfg.kind === "RESOURCE" || cfg.kind === "ITEM") && resourceNFTContract) {
         const { resourceId, amount } = details || {};
         if (!Number.isInteger(resourceId) || resourceId <= 0) {
@@ -262,7 +239,7 @@ export function setupBillingRoutes(app) {
         }
       }
 
-      // CURRENCY (GameCurrency)
+      // CURRENCY
       else if (cfg.kind === "CURRENCY" && gameCurrencyContract) {
         const { amount } = details || {};
         if (!Number.isInteger(amount) || amount <= 0) {
@@ -288,7 +265,7 @@ export function setupBillingRoutes(app) {
         }
       }
 
-      // LAND (LandNFT) – минт на парцел
+      // LAND
       else if (cfg.kind === "LAND" && landNFTContract) {
         const { tokenId } = details || {};
         if (!Number.isInteger(tokenId) || tokenId <= 0) {
@@ -302,7 +279,7 @@ export function setupBillingRoutes(app) {
         }
       }
 
-      // PARCEL STATE – строеж / включване-изключване на сграда
+      // PARCEL STATE
       else if (cfg.kind === "PARCEL" && parcelStateContract && landNFTContract) {
         const { landId, buildingType, active } = details || {};
 
@@ -315,14 +292,12 @@ export function setupBillingRoutes(app) {
             .json({ error: "Invalid buildingType (must be 0..5)" });
         }
 
-        // проверка, че playerAddress е собственик на парцела
         const owner = await landNFTContract.ownerOf(landId);
         if (owner.toLowerCase() !== playerAddress.toLowerCase()) {
           return res.status(403).json({ error: "Player is not owner of landId" });
         }
 
         if (cfg.operation === "ACTIVATE_BUILDING") {
-          // activateBuilding(uint256 landId, address player, uint8 buildingType)
           onchainTx = await parcelStateContract.activateBuilding(
             landId,
             playerAddress,
@@ -335,7 +310,6 @@ export function setupBillingRoutes(app) {
               .json({ error: "Invalid 'active' flag (must be boolean)" });
           }
 
-          // setBuildingActive(uint256 landId, address player, uint8 buildingType, bool active)
           onchainTx = await parcelStateContract.setBuildingActive(
             landId,
             playerAddress,
@@ -347,7 +321,7 @@ export function setupBillingRoutes(app) {
         }
       }
 
-      // Ако нито един от клоновете не е хванал действието
+      // Нищо не е match-нало
       else {
         return res.status(500).json({
           error:
