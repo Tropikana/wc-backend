@@ -152,28 +152,21 @@
     <h2>1. Настройки</h2>
     <label for="apiBase">API адрес на сървъра</label>
     <input type="text" id="apiBase" />
-
     <p class="small">
       Ако отваряш тази страница от същия домейн като сървъра (Render), остави стойността както е.  
       Ако тестваш локално, можеш да сложиш например <code>http://localhost:3000</code>.
     </p>
-
     <button id="btnSaveApi" class="secondary">Запази API адреса</button>
-
     <div id="apiStatus" class="status"></div>
   </section>
 
   <!-- Логване с портфейл -->
   <section>
     <h2>2. Логване с портфейл (QR)</h2>
-
     <label for="chainRef">Chain (eip155:<span class="small">например 137 за Polygon</span>)</label>
     <input type="text" id="chainRef" value="eip155:137" />
-
     <button id="btnGetQr">Генерирай QR за WalletConnect</button>
-
     <div id="qr"></div>
-
     <div class="status" id="wcStatus"></div>
   </section>
 
@@ -185,7 +178,7 @@
       1) Избери действие и въведи параметри<br />
       2) Натисни „Вземи цена“ → ще получиш колко native токен трябва да плати играчът<br />
       3) „Плати“ → ще извика <code>eth_sendTransaction</code> към портфейла<br />
-      4) „Изпълни действие“ → сървърът ще минтне/изгори в съответния смарт договор
+      4) След успешното плащане сървърът автоматично ще изпълни действието в смарт договора
     </div>
 
     <label for="actionType">Действие (actionType)</label>
@@ -210,6 +203,7 @@
         <button id="btnPay" class="secondary" disabled>2) Плати</button>
       </div>
       <div>
+        <!-- Остава като fallback, но вече не е задължителен -->
         <button id="btnComplete" disabled>3) Изпълни действие</button>
       </div>
     </div>
@@ -306,14 +300,12 @@
         "Сесия създадена. Сканирай QR кода с MetaMask / друго WC приложение."
       );
 
-      // Показваме QR за uri-то
       const uriEncoded = encodeURIComponent(data.uri);
       $("qr").innerHTML =
         '<img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' +
         uriEncoded +
         '" alt="WC QR" />';
 
-      // Периодично пита /wc-status
       wcPollTimer = setInterval(checkWcStatus, 1500);
     } catch (e) {
       setStatus("wcStatus", "Грешка при генериране на WC URI: " + e.message);
@@ -323,8 +315,7 @@
   async function checkWcStatus() {
     if (!wcPendingId) return;
     try {
-      const url =
-        apiBase() + "/wc-status?id=" + encodeURIComponent(wcPendingId);
+      const url = apiBase() + "/wc-status?id=" + encodeURIComponent(wcPendingId);
       const resp = await fetch(url);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
@@ -355,7 +346,6 @@
       } else if (data.status === "pending") {
         // още чакаме
       } else {
-        // not_found
         clearWcSession();
         setStatus("wcStatus", "Сесията не е намерена.");
       }
@@ -424,6 +414,29 @@
 
   renderDetailsFields();
 
+  // Събира детайлите за действието (ползва се и от auto, и от fallback)
+  function buildDetails(actionType) {
+    const details = {};
+
+    if (actionType.startsWith("RESOURCE_NFT_")) {
+      details.resourceId = parseInt($("detail_resourceId").value, 10);
+      details.amount = parseInt($("detail_amount").value, 10);
+    } else if (actionType.startsWith("CURRENCY_")) {
+      details.amount = parseInt($("detail_amount").value, 10);
+    } else if (actionType === "LAND_NFT_MINT") {
+      details.tokenId = parseInt($("detail_tokenId").value, 10);
+    } else if (actionType === "PARCEL_ACTIVATE_BUILDING") {
+      details.landId = parseInt($("detail_landId").value, 10);
+      details.buildingType = parseInt($("detail_buildingType").value, 10);
+    } else if (actionType === "PARCEL_SET_BUILDING_ACTIVE") {
+      details.landId = parseInt($("detail_landId").value, 10);
+      details.buildingType = parseInt($("detail_buildingType").value, 10);
+      details.active = $("detail_active").checked;
+    }
+
+    return details;
+  }
+
   // ---------- Billing flow ----------
   $("btnQuote").onclick = async () => {
     try {
@@ -485,6 +498,9 @@
         params: [tx],
       };
 
+      $("btnPay").disabled = true;
+      $("btnComplete").disabled = true;
+
       setStatus(
         "billingStatus",
         "Изпращане на плащането към портфейла (WC request)..."
@@ -501,18 +517,23 @@
 
       const txHash = data.result;
       lastPaymentTxHash = txHash;
-      $("btnComplete").disabled = false;
 
       setStatus(
         "billingStatus",
-        "Плащането е изпратено. txHash=" + txHash + "\nЧакай да бъде mine-нато, после „Изпълни действие“."
+        "Плащането е изпратено. txHash=" +
+          txHash +
+          "\nИзчакване и автоматично изпълнение на действието..."
       );
+
+      // Автоматично изпълнение на действието
+      await runComplete();
     } catch (e) {
+      $("btnPay").disabled = false;
       setStatus("billingStatus", "Грешка при плащането: " + e.message);
     }
   };
 
-  $("btnComplete").onclick = async () => {
+  async function runComplete() {
     try {
       if (!wcSession) {
         return setStatus("billingStatus", "Няма активна WC сесия.");
@@ -525,32 +546,14 @@
       }
 
       const actionType = actionSelect.value;
-      const details = {};
+      const details = buildDetails(actionType);
 
-      // Събираме details според actionType
-      if (actionType.startsWith("RESOURCE_NFT_")) {
-        details.resourceId = parseInt($("detail_resourceId").value, 10);
-        details.amount = parseInt($("detail_amount").value, 10);
-      } else if (actionType.startsWith("CURRENCY_")) {
-        details.amount = parseInt($("detail_amount").value, 10);
-      } else if (actionType === "LAND_NFT_MINT") {
-        details.tokenId = parseInt($("detail_tokenId").value, 10);
-      } else if (actionType === "PARCEL_ACTIVATE_BUILDING") {
-        details.landId = parseInt($("detail_landId").value, 10);
-        details.buildingType = parseInt(
-          $("detail_buildingType").value,
-          10
-        );
-      } else if (actionType === "PARCEL_SET_BUILDING_ACTIVE") {
-        details.landId = parseInt($("detail_landId").value, 10);
-        details.buildingType = parseInt(
-          $("detail_buildingType").value,
-          10
-        );
-        details.active = $("detail_active").checked;
-      }
+      $("btnComplete").disabled = true;
 
-      setStatus("billingStatus", "Изпълняване на действие в смарт договора...");
+      setStatus(
+        "billingStatus",
+        "Изчакване на плащането и изпълнение на действие в смарт договора..."
+      );
 
       const body = {
         actionType,
@@ -578,8 +581,15 @@
       );
       $("btnComplete").disabled = true;
     } catch (e) {
+      // Ако има грешка (например timeout), даваме възможност за ръчен опит
+      $("btnComplete").disabled = false;
       setStatus("billingStatus", "Грешка при /billing/complete: " + e.message);
     }
+  }
+
+  // Ръчен fallback – просто вика същото
+  $("btnComplete").onclick = async () => {
+    await runComplete();
   };
 
   $("btnClearLog").onclick = () => {
