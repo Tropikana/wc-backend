@@ -163,8 +163,9 @@
   <!-- Логване с портфейл -->
   <section>
     <h2>2. Логване с портфейл (QR)</h2>
-    <label for="chainRef">Chain (eip155:<span class="small">например 137 за Polygon</span>)</label>
-    <input type="text" id="chainRef" value="eip155:137" />
+    <label for="chainRef">Chain (eip155:<span class="small">например 80002 за Polygon Amoy</span>)</label>
+    <!-- по подразбиране: Amoy -->
+    <input type="text" id="chainRef" value="eip155:80002" />
     <button id="btnGetQr">Генерирай QR за WalletConnect</button>
     <div id="qr"></div>
     <div class="status" id="wcStatus"></div>
@@ -240,6 +241,11 @@
     if (msg) logLine(msg);
   }
 
+  // ---------- Константи за Polygon Amoy ----------
+  // chainId 80002 (hex 0x13882)
+  const AMOY_CHAIN_ID_HEX = "0x13882";
+  const AMOY_CHAIN_REF = "eip155:80002";
+
   // ---------- Настройки ----------
   const apiInput = $("apiBase");
   const apiStatus = $("apiStatus");
@@ -286,7 +292,7 @@
     try {
       clearWcSession();
 
-      const chainRef = $("chainRef").value.trim() || "eip155:137";
+      const chainRef = $("chainRef").value.trim() || AMOY_CHAIN_REF;
       const url = apiBase() + "/wc-uri?chain=" + encodeURIComponent(chainRef);
 
       setStatus("wcStatus", "Създаване на WC сесия...");
@@ -312,6 +318,67 @@
     }
   };
 
+  // helper за изпращане на WC JSON-RPC заявки (ползваме го и за switch/add chain, и за плащане)
+  async function sendWcRequest(method, params) {
+    if (!wcSession) throw new Error("Няма активна WC сесия.");
+
+    const body = {
+      topic: wcSession.topic,
+      method,
+      chainRef: AMOY_CHAIN_REF, // спазваме същата мрежа навсякъде
+      params,
+    };
+
+    const resp = await fetch(apiBase() + "/wc-request", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) {
+      throw new Error(data.error || "HTTP " + resp.status);
+    }
+    return data.result;
+  }
+
+  // автоматично добавяне/превключване към Amoy в MetaMask
+  async function ensureAmoyNetwork() {
+    try {
+      // 1) пробваме директно да сменим мрежата
+      await sendWcRequest("wallet_switchEthereumChain", [
+        { chainId: AMOY_CHAIN_ID_HEX },
+      ]);
+      logLine("wallet_switchEthereumChain към Amoy изпълнена.");
+    } catch (err) {
+      const msg = String(err.message || err);
+      // ако верне, че веригата не е добавена -> добавяме я
+      if (msg.includes("4902") || msg.toLowerCase().includes("unrecognized chain")) {
+        logLine("Amoy не е добавена. Опитваме wallet_addEthereumChain...");
+        await sendWcRequest("wallet_addEthereumChain", [
+          {
+            chainId: AMOY_CHAIN_ID_HEX,
+            chainName: "Polygon Amoy Testnet",
+            nativeCurrency: {
+              name: "Polygon",
+              symbol: "POL",
+              decimals: 18,
+            },
+            rpcUrls: ["https://rpc-amoy.polygon.technology/"],
+            blockExplorerUrls: ["https://amoy.polygonscan.com/"],
+          },
+        ]);
+
+        // и после пак switch
+        await sendWcRequest("wallet_switchEthereumChain", [
+          { chainId: AMOY_CHAIN_ID_HEX },
+        ]);
+        logLine("Мрежата Amoy беше добавена и избрана в MetaMask.");
+      } else {
+        logLine("Грешка при смяна на мрежата: " + msg);
+      }
+    }
+  }
+
   async function checkWcStatus() {
     if (!wcPendingId) return;
     try {
@@ -335,10 +402,12 @@
           " @ " +
           (data.networkName || wcSession.chainRef);
         logLine(
-          "WC session approved for " +
-            wcSession.address +
-            " on " +
-            wcSession.chainRef
+          "WC session approved for " + wcSession.address + " on " + wcSession.chainRef
+        );
+
+        // веднага опитваме да превключим/добавим Polygon Amoy
+        ensureAmoyNetwork().catch((e) =>
+          logLine("Неуспешна автоматична смяна на мрежата: " + e.message)
         );
       } else if (data.status === "expired") {
         clearWcSession();
@@ -414,7 +483,6 @@
 
   renderDetailsFields();
 
-  // Събира детайлите за действието (ползва се и от auto, и от fallback)
   function buildDetails(actionType) {
     const details = {};
 
@@ -491,13 +559,6 @@
         value: lastQuote.priceWei, // hex от сървъра
       };
 
-      const body = {
-        topic: wcSession.topic,
-        method: "eth_sendTransaction",
-        chainRef: wcSession.chainRef,
-        params: [tx],
-      };
-
       $("btnPay").disabled = true;
       $("btnComplete").disabled = true;
 
@@ -505,17 +566,9 @@
         "billingStatus",
         "Изпращане на плащането към портфейла (WC request)..."
       );
-      const resp = await fetch(apiBase() + "/wc-request", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
-      if (!resp.ok || !data.ok) {
-        throw new Error(data.error || "HTTP " + resp.status);
-      }
 
-      const txHash = data.result;
+      // използваме helper-а, вместо ръчно да викаме /wc-request
+      const txHash = await sendWcRequest("eth_sendTransaction", [tx]);
       lastPaymentTxHash = txHash;
 
       setStatus(
@@ -581,7 +634,6 @@
       );
       $("btnComplete").disabled = true;
     } catch (e) {
-      // Ако има грешка (например timeout), даваме възможност за ръчен опит
       $("btnComplete").disabled = false;
       setStatus("billingStatus", "Грешка при /billing/complete: " + e.message);
     }
