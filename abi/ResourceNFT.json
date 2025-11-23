@@ -1,5 +1,5 @@
 {
-  "abi": [[
+  "abi": [
 	{
 		"inputs": [
 			{
@@ -993,5 +993,5 @@
 		"stateMutability": "view",
 		"type": "function"
 	}
-]]
+]
 }
