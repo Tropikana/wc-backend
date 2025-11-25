@@ -148,6 +148,7 @@ const EIP155_NAMES = {
   42161: "Arbitrum One",
   43114: "Avalanche C-Chain",
   8453: "Base",
+  80002: "Polygon Amoy Testnet",
 };
 const ALLOWED_CHAIN_REFS = new Set(
   Object.keys(EIP155_NAMES).map((id) => `eip155:${id}`)
